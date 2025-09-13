@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ddp"
+version = "0.1.0"
+description = "Dynamic Delivery Pooling (teaching repo)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT License" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+dependencies = [
+  "numpy>=1.24",
+  "networkx>=3.0",
+  "pulp>=2.7",
+]
+
+[project.urls]
+Repository = "https://github.com/<you>/<repo>"
+
+[project.scripts]
+ddp-demo = "ddp.scripts.run_demo:main"
+ddp-mwe01 = "ddp.scripts.mwe_01:main"
+ddp-many = "ddp.scripts.run_many:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
