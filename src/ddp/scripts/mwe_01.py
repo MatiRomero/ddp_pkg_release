@@ -1,26 +1,110 @@
 import numpy as np
-from ddp.engine.sim import simulate
+from ddp.scripts.run import run_instance
 
-def reward_fn(i, j, theta):
-    return min(theta[i], theta[j])
-
-def score_pb(i, j, theta):
-    # s_j = theta[j]/2  (simple potential)
-    return reward_fn(i, j, theta) - 0.5 * theta[j]
 
 def main():
-    theta = np.array([0.9, 0.2, 0.8, 0.1], dtype=float)
-    timestamps = np.arange(len(theta), dtype=float)
-    d = 1.0
+    # Hand-crafted instance
+    theta = np.array([0.2, 0.1, 0.8, 1, 0.1, 0.9, 1, 0.1], dtype=float)
+    timestamps = np.arange(len(theta), dtype=float)  # arrivals 0,1,2,...
+    d = 3  # time window (periods)
 
-    for rule in ("naive", "threshold"):
-        res = simulate(
-            theta, score_fn=score_pb, reward_fn=reward_fn,
-            decision_rule=rule, timestamps=timestamps, time_window=d,
-            policy="score", seed=0
-        )
-        pairs_only = [(i, j) for (i, j, _, _) in res["pairs"]]
-        print(f"{rule.upper():<10} pairs={pairs_only}  savings={res['total_savings']:.3f}  pooled%={res['pooled_pct']:.1f}%")
+    # shadows = ("naive", "pb", "hd")
+    shadows = ("naive", "pb")
+    # dispatches = ("greedy", "greedy+", "batch", "rbatch")
+    dispatches = ("greedy", "batch", "rbatch")
+
+    # Ask the core runner to return detailed matches and also print them
+    result = run_instance(
+        theta=theta,
+        timestamps=timestamps,
+        d=d,
+        shadows=shadows,
+        dispatches=dispatches,
+        seed=0,
+        with_opt=True,          # keep True if you want R/OPT in the table
+        save_csv="",           # or "mwe_01_results.csv"
+        print_table=True,
+        return_details=True,    # <-- get pairs/solos per algorithm back
+        print_matches=False,     # <-- also print pairs/solos after the table
+    )
+
+    # Pretty-print final matches with arrival periods (for quick debugging)
+    # --- OPT summary (if computed) ---
+    opt_pairs_raw = result.get("opt_pairs")
+    opt_total = result.get("opt_total")
+    if opt_pairs_raw:
+        # result['opt_pairs'] is [(i, j, weight), ...] -> strip weights
+        opt_pairs = [(i, j) for (i, j, _) in opt_pairs_raw]
+        print(f"\nOPT        total={opt_total:.3f}  pairs={opt_pairs}")
+
+    details = result.get("details", {})
+    print("\nFinal matches per algorithm (pairs i-j) with arrivals and solos:")
+    for sh in shadows:
+        for disp in dispatches:
+            key = (sh, disp)
+            info = details.get(key)
+            if not info:
+                continue
+            pairs = info["pairs"]
+            solos = info["solos"]
+            print(f"{sh.upper():<10} {disp:<12} pairs={pairs}  solos={solos}")
+
+    # === Plot: one figure per (shadow, dispatch) ===
+    import matplotlib.pyplot as plt
+
+    theta_arr = result["theta"]
+    t_arr     = result["timestamps"]
+
+    # Use a deterministic palette: same color within a figure, different across algorithms
+    palette = plt.rcParams['axes.prop_cycle'].by_key().get('color', [
+        'C0','C1','C2','C3','C4','C5','C6','C7','C8','C9'
+    ])
+
+    def alg_color(sh, disp):
+        i = list(shadows).index(sh)
+        j = list(dispatches).index(disp)
+        return palette[(i * len(dispatches) + j) % len(palette)]
+
+    def plot_one(sh, disp):
+        info = details.get((sh, disp))
+        if not info:
+            return
+        pairs = info["pairs"]
+        col = alg_color(sh, disp)
+
+        plt.figure()
+        # jobs as points (arrival on x, "type/location" on y)
+        plt.scatter(t_arr, theta_arr, s=50, label="jobs", color="#666666", alpha=0.8)
+        # matched pairs as line segments — force same color within this figure
+        for (i, j) in pairs:
+            plt.plot([t_arr[i], t_arr[j]], [theta_arr[i], theta_arr[j]], linewidth=2, alpha=0.95, color=col)
+        plt.xlabel("arrival / period")
+        plt.ylabel("job type / location (theta)")
+        plt.title(f"{sh.upper()} + {disp}")
+        plt.tight_layout()
+
+    for sh in shadows:
+        for disp in dispatches:
+            plot_one(sh, disp)
+
+    
+    # --- Plot OPT (offline maximum) as a separate figure ---
+    opt_pairs_raw = result.get("opt_pairs")
+    if opt_pairs_raw:
+        opt_pairs = [(i, j) for (i, j, _) in opt_pairs_raw]
+        plt.figure()
+        # jobs as points
+        plt.scatter(t_arr, theta_arr, s=50, label="jobs", color="#666666", alpha=0.8)
+        # matched pairs (single consistent color)
+        for (i, j) in opt_pairs:
+            plt.plot([t_arr[i], t_arr[j]], [theta_arr[i], theta_arr[j]],
+                    linewidth=2, alpha=0.95, color="#000000")
+        plt.xlabel("arrival / period")
+        plt.ylabel("job type / location (theta)")
+        plt.title("OPT (offline maximum)")
+        plt.tight_layout()
+    plt.show()  # or comment out if you're saving files only
+
 
 if __name__ == "__main__":
     main()
