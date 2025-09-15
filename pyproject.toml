@@ -23,6 +23,8 @@ Repository = "https://github.com/<you>/<repo>"
 ddp-mwe01 = "ddp.scripts.mwe_01:main"
 ddp-many = "ddp.scripts.run_many:main"
 ddp-run   = "ddp.scripts.run:main"
+ddp-sweep = "ddp.scripts.sweep_param:main"
+ddp-plot-sweep = "ddp.scripts.plot_sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
