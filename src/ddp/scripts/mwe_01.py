@@ -1,10 +1,24 @@
+import argparse
+
 import numpy as np
 
 from ddp.model import Job
 from ddp.scripts.run import run_instance
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(
+        description="Run the minimal working example for delivery dispatching."
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Generate matplotlib plots for the resulting matches.",
+    )
+    args = parser.parse_args(argv)
+
+    plot = bool(args.plot)
+
     # Hand-crafted instance
     theta = np.array([0.2, 0.1, 0.8, 1, 0.1, 0.9, 1, 0.1], dtype=float)
     timestamps = np.arange(len(theta), dtype=float)  # arrivals 0,1,2,...
@@ -54,6 +68,9 @@ def main():
             solos = info["solos"]
             print(f"{sh.upper():<10} {disp:<12} pairs={pairs}  solos={solos}")
 
+    if not plot:
+        return
+
     # === Plot: one figure per (shadow, dispatch) ===
     import matplotlib.pyplot as plt
 
@@ -92,7 +109,7 @@ def main():
         for disp in dispatches:
             plot_one(sh, disp)
 
-    
+
     # --- Plot OPT (offline maximum) as a separate figure ---
     opt_pairs_raw = result.get("opt_pairs")
     if opt_pairs_raw:
