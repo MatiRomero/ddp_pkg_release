@@ -24,7 +24,6 @@ ddp-demo = "ddp.scripts.run_demo:main"
 ddp-mwe01 = "ddp.scripts.mwe_01:main"
 ddp-many = "ddp.scripts.run_many:main"
 ddp-run   = "ddp.scripts.run:main"
-ddp-gen   = "ddp.scripts.generate_n_run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
