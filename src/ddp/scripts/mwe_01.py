@@ -1,4 +1,6 @@
 import numpy as np
+
+from ddp.model import Job
 from ddp.scripts.run import run_instance
 
 
@@ -6,6 +8,10 @@ def main():
     # Hand-crafted instance
     theta = np.array([0.2, 0.1, 0.8, 1, 0.1, 0.9, 1, 0.1], dtype=float)
     timestamps = np.arange(len(theta), dtype=float)  # arrivals 0,1,2,...
+    jobs = [
+        Job(origin=(0.0, 0.0), dest=(float(length), 0.0), timestamp=float(ts))
+        for length, ts in zip(theta, timestamps)
+    ]
     d = 3  # time window (periods)
 
     # shadows = ("naive", "pb", "hd")
@@ -15,8 +21,7 @@ def main():
 
     # Ask the core runner to return detailed matches and also print them
     result = run_instance(
-        theta=theta,
-        timestamps=timestamps,
+        jobs=jobs,
         d=d,
         shadows=shadows,
         dispatches=dispatches,
@@ -52,8 +57,8 @@ def main():
     # === Plot: one figure per (shadow, dispatch) ===
     import matplotlib.pyplot as plt
 
-    theta_arr = result["theta"]
-    t_arr     = result["timestamps"]
+    theta_arr = np.array([job.length for job in result["jobs"]], dtype=float)
+    t_arr = result["timestamps"]
 
     # Use a deterministic palette: same color within a figure, different across algorithms
     palette = plt.rcParams['axes.prop_cycle'].by_key().get('color', [

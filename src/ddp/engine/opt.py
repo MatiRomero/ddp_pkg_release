@@ -1,29 +1,34 @@
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
+
+from ddp.model import Job
 
 # ---------------------------- helpers ----------------------------
-def _build_positive_edges(theta, weight_fn):
-    """Build (i,j,w) for i<j with w = weight_fn(i,j,theta) and w>0."""
-    n = len(theta)
+def _build_positive_edges(jobs: Sequence[Job], weight_fn):
+    """Build (i,j,w) for i<j with w = weight_fn(i,j,jobs) and w>0."""
+    n = len(jobs)
     edges: List[Tuple[int, int, float]] = []
     for i in range(n):
         for j in range(i + 1, n):
-            w = float(weight_fn(i, j, theta))
+            w = float(weight_fn(i, j, jobs))
             if w > 0:
                 edges.append((i, j, w))
     return edges
 
 # ---------------------------- LP (upper bound) + duals ----------------------------
-def compute_lp_relaxation(theta, reward_fn):
+def compute_lp_relaxation(jobs: Sequence[Job], reward_fn):
     """Fractional matching LP (upper bound) + duals (hindsight shadow prices)."""
     try:
         import pulp
     except Exception as e:
         raise RuntimeError("LP requires 'pulp'. `pip install pulp`") from e
 
-    n = len(theta)
-    def w_ij(i, j, th): return reward_fn(i, j, th)
+    jobs = list(jobs)
+    n = len(jobs)
 
-    edges = _build_positive_edges(theta, w_ij)
+    def w_ij(i, j, th):
+        return reward_fn(i, j, th)
+
+    edges = _build_positive_edges(jobs, w_ij)
     prob = pulp.LpProblem("fractional_matching", pulp.LpMaximize)
     x = {(i, j): pulp.LpVariable(f"x_{i}_{j}", 0.0, 1.0, cat="Continuous") for (i, j, _) in edges}
     prob += pulp.lpSum(w * x[(i, j)] for (i, j, w) in edges)
@@ -52,11 +57,15 @@ def compute_lp_relaxation(theta, reward_fn):
     return {"total_upper": total_upper, "frac_edges": frac, "duals": duals, "method": "ilp"}
 
 # ---------------------------- Offline OPT (integral) ----------------------------
-def compute_opt(theta, reward_fn, method: str = "auto"):
+def compute_opt(jobs: Sequence[Job], reward_fn, method: str = "auto"):
     """Offline OPT as integral max-weight matching on reward graph."""
-    def w_ij(i, j, th): return reward_fn(i, j, th)
-    edges = _build_positive_edges(theta, w_ij)
-    n = len(theta)
+    jobs = list(jobs)
+
+    def w_ij(i, j, th):
+        return reward_fn(i, j, th)
+
+    edges = _build_positive_edges(jobs, w_ij)
+    n = len(jobs)
 
     if method in ("auto", "networkx"):
         try:
@@ -97,7 +106,7 @@ def compute_opt(theta, reward_fn, method: str = "auto"):
     raise RuntimeError("No OPT method available. Install 'networkx' or 'pulp'.")
 
 # ---------------------------- Subset matching (batch / rbatch) ----------------------------
-def max_weight_matching_subset(nodes, theta, reward_fn, weight_fn=None, method: str = "auto"):
+def max_weight_matching_subset(nodes, jobs: Sequence[Job], reward_fn, weight_fn=None, method: str = "auto"):
     """Max-weight matching on subset S with edge weight_fn (defaults to reward)."""
     if weight_fn is None:
         weight_fn = reward_fn
@@ -105,13 +114,16 @@ def max_weight_matching_subset(nodes, theta, reward_fn, weight_fn=None, method: 
     if not S:
         return {"total_weight": 0.0, "pairs": [], "method": "none"}
 
-    def w_ij(i, j, th): return weight_fn(i, j, th)
+    jobs = list(jobs)
+
+    def w_ij(i, j, th):
+        return weight_fn(i, j, th)
     edges = []
     for a in range(len(S)):
         i = S[a]
         for b in range(a + 1, len(S)):
             j = S[b]
-            w = float(w_ij(i, j, theta))
+            w = float(w_ij(i, j, jobs))
             if w > 0:
                 edges.append((i, j, w))
 

@@ -4,6 +4,8 @@ import csv, time, argparse, math, os
 from collections import defaultdict
 import numpy as np
 from typing import Dict, List, Any
+
+from ddp.model import generate_jobs
 from ddp.scripts.run import run_instance  # ← replaced import
 
 try:
@@ -41,9 +43,10 @@ def main():
     for t in range(args.trials):
         seed = args.seed0 + t
         rng = np.random.default_rng(seed)
-        theta = rng.random(args.n)
-        timestamps = np.arange(args.n, dtype=float)
-        res = run_instance(theta=theta, timestamps=timestamps, d=args.d, shadows=shadows, dispatches=dispatches, seed=seed,
+        if args.n <= 1:
+            raise ValueError("run_many requires n > 1 to generate jobs")
+        jobs = generate_jobs(args.n, rng)
+        res = run_instance(jobs=jobs, d=args.d, shadows=shadows, dispatches=dispatches, seed=seed,
                            with_opt=args.with_opt, opt_method=args.opt_method, save_csv="", print_table=False,
                            return_details=False, print_matches=False)
         for rec in res["rows"]:
