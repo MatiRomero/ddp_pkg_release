@@ -16,6 +16,9 @@ dependencies = [
   "pulp>=2.7",
 ]
 
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+
 [project.urls]
 Repository = "https://github.com/<you>/<repo>"
 

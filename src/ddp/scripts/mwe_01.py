@@ -72,7 +72,14 @@ def main(argv: list[str] | None = None):
         return
 
     # === Plot: one figure per (shadow, dispatch) ===
-    import matplotlib.pyplot as plt
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        msg = (
+            "Matplotlib is required for plotting. Install the optional dependencies "
+            "with `pip install ddp[plot]` or, for editable installs, `pip install -e .[plot]`."
+        )
+        raise SystemExit(msg) from exc
 
     theta_arr = np.array([job.length for job in result["jobs"]], dtype=float)
     t_arr = result["timestamps"]
