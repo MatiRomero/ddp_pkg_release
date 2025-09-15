@@ -4,7 +4,7 @@ import csv, time, argparse, math, os
 from collections import defaultdict
 import numpy as np
 from typing import Dict, List, Any
-from ddp.scripts.run import run_once  # ← import the single source of truth
+from ddp.scripts.run import run_instance  # ← replaced import
 
 try:
     from tqdm import tqdm
@@ -21,6 +21,8 @@ def main():
     ap.add_argument("--dispatch", default="greedy,greedy+,batch,rbatch")
     ap.add_argument("--outdir", default="results", help="Directory to save CSV (created if missing)")
     ap.add_argument("--save_csv", default="results_agg.csv", help="Filename (written inside --outdir)")
+    ap.add_argument("--with_opt", action="store_true")
+    ap.add_argument("--opt_method", default="auto", choices=["auto","networkx","ilp"])
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -38,10 +40,14 @@ def main():
         print("(Tip) Install tqdm for a progress bar: pip install tqdm")
     for t in range(args.trials):
         seed = args.seed0 + t
-        for sh in shadows:
-            for disp in dispatches:
-                m = run_once(args.n, args.d, seed, sh, disp)  # <— single run
-                buckets[(sh, disp)].append(m)
+        rng = np.random.default_rng(seed)
+        theta = rng.random(args.n)
+        timestamps = np.arange(args.n, dtype=float)
+        res = run_instance(theta=theta, timestamps=timestamps, d=args.d, shadows=shadows, dispatches=dispatches, seed=seed,
+                           with_opt=args.with_opt, opt_method=args.opt_method, save_csv="", print_table=False,
+                           return_details=False, print_matches=False)
+        for rec in res["rows"]:
+            buckets[(rec["shadow"], rec["dispatch"])].append(rec)
         if pbar is not None:
             pbar.update(1)
 

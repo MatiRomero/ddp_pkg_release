@@ -56,13 +56,13 @@ def load_and_clean(csv_path: str) -> pd.DataFrame:
     df["dispatch"] = df["dispatch"].astype(str).str.strip().str.lower()
     return df
 
-def plot_metric_grid(df: pd.DataFrame, metric: str, std: str | None, outdir: str):
+def plot_metric_grid(df: pd.DataFrame, metric_col: str, std: str | None, outdir: str, n_label: str | None = None, d_label: str | None = None, metric_label: str | None = None):
     """Plot a grid with rows=shadow and cols=dispatch.
     Each cell shows mean and (if available) std over trials, and the background
     is a heatmap of the mean values.
     """
     # Build pivot tables (rows=shadow, cols=dispatch)
-    piv_val = df.pivot(index="shadow", columns="dispatch", values=metric)
+    piv_val = df.pivot(index="shadow", columns="dispatch", values=metric_col)
     shadows = list(piv_val.index)
     dispatches = list(piv_val.columns)
     vals = piv_val.values.astype(float)
@@ -105,12 +105,14 @@ def plot_metric_grid(df: pd.DataFrame, metric: str, std: str | None, outdir: str
 
     ax.set_xlabel("dispatch")
     ax.set_ylabel("shadow")
-    ax.set_title(f"{metric} (rows=shadow, cols=dispatch)")
+    title_label = metric_label or metric_col
+    ax.set_title(f"{title_label} (n={n_label}, d={d_label})")
 
     # Add colorbar for the means
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    out = os.path.join(outdir, f"{metric}_grid.png")
+    safe_label = (metric_label or metric_col).replace(" ", "_").replace("/", "-")
+    out = os.path.join(outdir, f"{safe_label}_grid.png")
     _savefig(fig, out)
     return out
 
@@ -118,8 +120,8 @@ def main():
     ap = argparse.ArgumentParser(description="Plot aggregated DDP results from run_many.py")
     ap.add_argument("--csv", required=True, help="Path to results_agg.csv written by run_many.py")
     ap.add_argument("--outdir", default="figs", help="Directory to save figures (created if missing)")
-    ap.add_argument("--metrics", default="mean_savings,mean_pooled_pct,mean_pairs,mean_solos",
-                    help="Comma-separated list of metrics to plot")
+    ap.add_argument("--metrics", default="ALL",
+                    help="Comma-separated list of metrics to plot, or ALL to auto-discover all mean_* columns in the CSV")
     ap.add_argument("--with_std", action="store_true",
                     help="If set, add error bars using std_* columns when present")
     args = ap.parse_args()
@@ -127,21 +129,41 @@ def main():
     _ensure_outdir(args.outdir)
     df = load_and_clean(args.csv)
 
-    std_map = {
-        "mean_savings": "std_savings",
-        "mean_pooled_pct": "std_pooled_pct",
-        "mean_pairs": None,
-        "mean_solos": None,
-    }
-    metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
+    if args.metrics.strip().upper() == "ALL":
+        metrics = [col for col in df.columns if col.startswith("mean_")]
+    else:
+        metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
+
+    err_for_metric = {}
+    for m in metrics:
+        suffix = m[len("mean_"):] if m.startswith("mean_") else None
+        err_col = f"std_{suffix}" if suffix else None
+        if args.with_std and err_col and err_col in df.columns:
+            err_for_metric[m] = err_col
+        else:
+            err_for_metric[m] = None
+
+    # derive labels for n and d from the CSV (handle mixed values gracefully)
+    def _mk_label(col):
+        if col not in df.columns:
+            return "?"
+        vals = pd.unique(df[col])
+        try:
+            vals = list(np.sort(vals.astype(float)))
+        except Exception:
+            vals = list(vals)
+        if len(vals) == 0:
+            return "?"
+        if len(vals) == 1:
+            return f"{vals[0]:g}" if isinstance(vals[0], (int,float,np.floating)) else str(vals[0])
+        return f"{vals[0]:g}..{vals[-1]:g}" if isinstance(vals[0], (int,float,np.floating)) else f"{vals[0]}..{vals[-1]}"
+    n_label = _mk_label("n")
+    d_label = _mk_label("d")
     saved = []
     for m in metrics:
-        err_col = std_map.get(m)
-        if args.with_std and err_col and err_col in df.columns:
-            err = err_col
-        else:
-            err = None
-        saved.append(plot_metric_grid(df, m, err, args.outdir))
+        err = err_for_metric.get(m)
+        label = m.replace("mean_", "").replace("_", " ")
+        saved.append(plot_metric_grid(df, m, err, args.outdir, n_label=n_label, d_label=d_label, metric_label=label))
 
     summary_path = os.path.join(args.outdir, "summary_sorted.csv")
     order_cols = ["shadow", "dispatch", "mean_savings", "mean_pooled_pct", "mean_pairs", "mean_solos"]
