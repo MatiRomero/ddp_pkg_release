@@ -1,33 +1,48 @@
-import time, csv, numpy as np
-from ddp.engine.sim import simulate
-from ddp.engine.opt import compute_opt, compute_lp_relaxation
+"""Command-line helpers for running SHADOW × DISPATCH experiments on job lists."""
+
+from __future__ import annotations
+
+import csv
+import time
+from typing import Sequence
+
+import numpy as np
+
 from ddp.algorithms.potential import potential as potential_vec
+from ddp.engine.opt import compute_lp_relaxation, compute_opt
+from ddp.engine.sim import simulate
+from ddp.model import Job, generate_jobs, reward as pooling_reward
 
 
-def reward_fn(i, j, theta):
-    # Toy 1D distance-savings
-    return min(theta[i], theta[j])
+def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
+    """Toy pooling reward: distance saved when merging jobs ``i`` and ``j``."""
+
+    return pooling_reward([jobs[i], jobs[j]])
 
 
 def make_local_score(reward_fn, sp):
-    # local greedy score: r(i,j) - s_j
-    def score(i, j, theta):
-        return reward_fn(i, j, theta) - float(sp[j])
+    """Local greedy score: ``r(i, j) - s_j``."""
+
+    def score(i: int, j: int, jobs: Sequence[Job]) -> float:
+        return reward_fn(i, j, jobs) - float(sp[j])
+
     return score
 
 
 def make_weight_fn(reward_fn, sp):
-    # (r)batch weight: r(i,j) - s_i - s_j
-    def w(i, j, theta):
-        return reward_fn(i, j, theta) - float(sp[i]) - float(sp[j])
-    return w
+    """(R)BATCH weight: ``r(i, j) - s_i - s_j``."""
+
+    def weight(i: int, j: int, jobs: Sequence[Job]) -> float:
+        return reward_fn(i, j, jobs) - float(sp[i]) - float(sp[j])
+
+    return weight
 
 
-def _safe_gap(upper, val):
+def _safe_gap(upper: float, val: float) -> float:
     return max(upper - val, 0.0)
 
 
-def _write_csv(rows, path):
+def _write_csv(rows, path: str) -> None:
     if not path:
         return
     fields = [
@@ -48,14 +63,13 @@ def _write_csv(rows, path):
         "method",
     ]
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def run_instance(
-    theta,
-    timestamps,
+    jobs: Sequence[Job],
     d,
     shadows=("naive", "pb", "hd"),
     dispatches=("greedy", "greedy+", "batch", "rbatch"),
@@ -67,49 +81,38 @@ def run_instance(
     return_details=False,
     print_matches=False,
 ):
-    """Run the SHADOW × DISPATCH grid on a given instance.
+    """Run the SHADOW × DISPATCH grid on a job instance."""
 
-    Parameters
-    ----------
-    theta : 1D array-like
-    timestamps : 1D array-like (same length as theta)
-    d : float or 1D array-like (time window)
-    return_details : bool
-        If True, return per-(shadow,dispatch) final matches/solos for downstream debugging/plots.
-    print_matches : bool
-        If True, print final matches/solos per algorithm after the table.
-
-    Returns
-    -------
-    dict with keys: rows, lp_total, lp_time, opt_total, opt_time, opt_pairs, opt_method,
-    and if return_details: details, plus instance arrays (theta, timestamps, due_time).
-    """
-    theta = np.asarray(theta, dtype=float)
-    timestamps = np.asarray(timestamps, dtype=float)
-    n = len(theta)
+    jobs = list(jobs)
+    n = len(jobs)
+    timestamps = np.array([job.timestamp for job in jobs], dtype=float)
+    lengths = np.array([job.length for job in jobs], dtype=float)
 
     # compute due_time for plotting/debug (not used by simulate)
     if np.isscalar(d):
         due_time = timestamps + float(d)
     else:
         d_arr = np.asarray(d, dtype=float)
-        assert len(d_arr) == n, "len(time_window) must equal len(theta)"
+        assert len(d_arr) == n, "len(time_window) must equal len(jobs)"
         due_time = timestamps + d_arr
 
     # LP (upper bound + duals for HD) — compute once
     t0 = time.perf_counter()
-    lp = compute_lp_relaxation(theta, reward_fn)
+    lp = compute_lp_relaxation(jobs, reward_fn)
     lp_time = time.perf_counter() - t0
-    lp_total, duals = float(lp["total_upper"]), np.array(lp["duals"], dtype=float)
+    lp_total = float(lp["total_upper"])
+    duals = np.array(lp["duals"], dtype=float)
 
     # Optional OPT once
     opt_total = opt_pairs = opt_m = None
     opt_time = 0.0
     if with_opt:
         t0 = time.perf_counter()
-        opt = compute_opt(theta, reward_fn, method=opt_method)
+        opt = compute_opt(jobs, reward_fn, method=opt_method)
         opt_time = time.perf_counter() - t0
-        opt_total, opt_pairs, opt_m = float(opt["total_reward"]), opt["pairs"], opt["method"]
+        opt_total = float(opt["total_reward"])
+        opt_pairs = opt["pairs"]
+        opt_m = opt["method"]
 
     if print_table:
         print(f"LP_RELAX  upper={lp_total:.3f}  method={lp['method']}  time={lp_time:.3f}s")
@@ -124,14 +127,13 @@ def run_instance(
         )
 
     rows = []
-    details = {}  # (shadow, dispatch) -> {pairs:[(i,j),...], solos:[i,...]}
+    details = {}
 
     for sh in shadows:
-        # shadow vector
         if sh == "naive":
             sp = np.zeros(n, dtype=float)
         elif sh == "pb":
-            sp = potential_vec(theta)
+            sp = potential_vec(lengths)
         elif sh == "hd":
             sp = duals
         else:
@@ -146,12 +148,11 @@ def run_instance(
             t_run = time.perf_counter()
             if disp == "greedy":
                 res = simulate(
-                    theta,
+                    jobs,
                     score_fn,
                     reward_fn,
                     "naive",
-                    timestamps,
-                    d,
+                    time_window=d,
                     policy="score",
                     weight_fn=None,
                     shadow=None,
@@ -159,12 +160,11 @@ def run_instance(
                 )
             elif disp == "greedy+":
                 res = simulate(
-                    theta,
+                    jobs,
                     score_fn,
                     reward_fn,
                     "threshold",
-                    timestamps,
-                    d,
+                    time_window=d,
                     policy="score",
                     weight_fn=None,
                     shadow=None,
@@ -172,12 +172,11 @@ def run_instance(
                 )
             elif disp == "batch":
                 res = simulate(
-                    theta,
+                    jobs,
                     score_fn,
                     reward_fn,
                     "policy",
-                    timestamps,
-                    d,
+                    time_window=d,
                     policy="batch",
                     weight_fn=w_fn,
                     shadow=sp,
@@ -185,12 +184,11 @@ def run_instance(
                 )
             elif disp == "rbatch":
                 res = simulate(
-                    theta,
+                    jobs,
                     score_fn,
                     reward_fn,
                     "policy",
-                    timestamps,
-                    d,
+                    time_window=d,
                     policy="rbatch",
                     weight_fn=w_fn,
                     shadow=sp,
@@ -244,7 +242,7 @@ def run_instance(
 
             if return_details or print_matches:
                 pairs_idx = [(i, j) for (i, j, _, _) in res["pairs"]]
-                info = {"pairs": pairs_idx, "solos": list(res["solos"]) }
+                info = {"pairs": pairs_idx, "solos": list(res["solos"])}
                 details[(sh, disp)] = info
                 if print_matches:
                     print(
@@ -261,8 +259,7 @@ def run_instance(
         "opt_time": opt_time,
         "opt_pairs": opt_pairs,
         "opt_method": opt_m,
-        # instance-level arrays for plotting
-        "theta": theta,
+        "jobs": jobs,
         "timestamps": timestamps,
         "due_time": due_time,
     }
@@ -271,7 +268,6 @@ def run_instance(
     return out
 
 
-# Single-run helper for programmatic use.
 def run_once(
     n: int,
     d: float,
@@ -281,40 +277,27 @@ def run_once(
     with_opt: bool = False,
     opt_method: str = "auto",
 ) -> dict:
-    """
-    Single-run helper for programmatic use.
-    Mirrors the logic in run_instance for one (shadow, dispatch) combo,
-    generating a fresh theta/timestamps from (n, seed).
+    """Single-run helper mirroring :func:`run_instance` for one configuration."""
 
-    Returns a dict with the SAME keys used in run_instance rows:
-      n, d, seed, shadow, dispatch,
-      savings, pooled_pct, ratio_lp, lp_gap, ratio_opt, opt_gap,
-      pairs, solos, time_s, method
-    """
     rng = np.random.default_rng(seed)
-    theta = rng.random(n)
-    timestamps = np.arange(n, dtype=float)
+    if n <= 1:
+        raise ValueError("run_once requires n > 1 to generate jobs")
+    jobs = generate_jobs(n, rng)
+    lengths = np.array([job.length for job in jobs], dtype=float)
 
-    # LP once (upper bound + duals for HD)
-    t0 = time.perf_counter()
-    lp = compute_lp_relaxation(theta, reward_fn)
-    _lp_time = time.perf_counter() - t0  # kept for parity, not returned here
+    lp = compute_lp_relaxation(jobs, reward_fn)
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
 
-    # Optional OPT once
     opt_total = None
     if with_opt:
-        t0 = time.perf_counter()
-        opt = compute_opt(theta, reward_fn, method=opt_method)
-        _opt_time = time.perf_counter() - t0  # available if needed
+        opt = compute_opt(jobs, reward_fn, method=opt_method)
         opt_total = float(opt["total_reward"])
 
-    # Build shadow vector (same choices as run_instance)
     if shadow == "naive":
         sp = np.zeros(n, dtype=float)
     elif shadow == "pb":
-        sp = potential_vec(theta)
+        sp = potential_vec(lengths)
     elif shadow == "hd":
         sp = duals
     else:
@@ -323,33 +306,59 @@ def run_once(
     score_fn = make_local_score(reward_fn, sp)
     w_fn = make_weight_fn(reward_fn, sp)
 
-    # Dispatch (same policies as run_instance)
     t_run = time.perf_counter()
     if dispatch == "greedy":
         res = simulate(
-            theta, score_fn, reward_fn, "naive", timestamps, d,
-            policy="score", weight_fn=None, shadow=None, seed=seed,
+            jobs,
+            score_fn,
+            reward_fn,
+            "naive",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
         )
     elif dispatch == "greedy+":
         res = simulate(
-            theta, score_fn, reward_fn, "threshold", timestamps, d,
-            policy="score", weight_fn=None, shadow=None, seed=seed,
+            jobs,
+            score_fn,
+            reward_fn,
+            "threshold",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
         )
     elif dispatch == "batch":
         res = simulate(
-            theta, score_fn, reward_fn, "policy", timestamps, d,
-            policy="batch", weight_fn=w_fn, shadow=sp, seed=seed,
+            jobs,
+            score_fn,
+            reward_fn,
+            "policy",
+            time_window=d,
+            policy="batch",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
         )
     elif dispatch == "rbatch":
         res = simulate(
-            theta, score_fn, reward_fn, "policy", timestamps, d,
-            policy="rbatch", weight_fn=w_fn, shadow=sp, seed=seed,
+            jobs,
+            score_fn,
+            reward_fn,
+            "policy",
+            time_window=d,
+            policy="rbatch",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
         )
     else:
         raise ValueError(f"Unknown dispatch: {dispatch}")
     run_time = time.perf_counter() - t_run
 
-    # Metrics (same naming as your rows)
     r = res["total_savings"]
     pooled_pct = res["pooled_pct"]
     ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
@@ -357,7 +366,7 @@ def run_once(
     ratio_opt = (r / opt_total) if (with_opt and opt_total and opt_total > 0) else None
     gap_opt = (_safe_gap(opt_total, r) if (with_opt and opt_total is not None) else None)
 
-    out = {
+    return {
         "shadow": shadow,
         "dispatch": dispatch,
         "n": n,
@@ -374,16 +383,13 @@ def run_once(
         "time_s": run_time,
         "method": ("score" if "greedy" in dispatch else dispatch),
     }
-    return out
 
 
-# Optional CLI: run on arrays loaded from .npy files (theta, timestamps) for power users.
-def main():
+def main() -> None:
     import argparse
 
-    p = argparse.ArgumentParser(description="Run SHADOW×DISPATCH on a given instance (arrays).")
-    p.add_argument("--theta", type=str, help="Path to .npy for theta (1D float array).")
-    p.add_argument("--timestamps", type=str, help="Path to .npy for timestamps (1D float array).")
+    p = argparse.ArgumentParser(description="Run SHADOW×DISPATCH on a given job instance.")
+    p.add_argument("--jobs", type=str, help="Path to .npz containing 'origins', 'dests', 'timestamps'.")
     p.add_argument("--d", type=float, required=True)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--shadows", default="naive,pb,hd")
@@ -395,16 +401,31 @@ def main():
     p.add_argument("--return_details", action="store_true")
     args = p.parse_args()
 
-    theta = np.load(args.theta) if args.theta else None
-    timestamps = np.load(args.timestamps) if args.timestamps else None
-    if theta is None:
-        raise SystemExit("Provide --theta .npy")
-    if timestamps is None:
-        timestamps = np.arange(len(theta), dtype=float)
+    if not args.jobs:
+        raise SystemExit("Provide --jobs .npz")
+
+    with np.load(args.jobs) as data:
+        try:
+            origins = data["origins"]
+            dests = data["dests"]
+            timestamps = data["timestamps"]
+        except KeyError as exc:
+            raise SystemExit("--jobs file must contain 'origins', 'dests', and 'timestamps'") from exc
+
+    if not (len(origins) == len(dests) == len(timestamps)):
+        raise SystemExit("Mismatched job array lengths in --jobs")
+
+    jobs = [
+        Job(
+            origin=tuple(map(float, origin)),
+            dest=tuple(map(float, dest)),
+            timestamp=float(ts),
+        )
+        for origin, dest, ts in zip(origins, dests, timestamps)
+    ]
 
     run_instance(
-        theta=theta,
-        timestamps=timestamps,
+        jobs=jobs,
         d=args.d,
         shadows=[s.strip() for s in args.shadows.split(",") if s.strip()],
         dispatches=[d.strip() for d in args.dispatch.split(",") if d.strip()],
