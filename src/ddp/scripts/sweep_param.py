@@ -1,6 +1,8 @@
 # src/ddp/scripts/sweep_param.py
 import argparse, csv, time, os
 import numpy as np
+
+from ddp.model import generate_jobs
 from ddp.scripts.run import run_instance
 try:
     from tqdm import tqdm
@@ -86,11 +88,12 @@ def main():
             seed_t = args.seed + t
 
             rng = np.random.default_rng(seed_t)
-            theta = rng.random(n)
-            timestamps = np.arange(n, dtype=float)
+            if n <= 1:
+                raise ValueError("Sweep requires n > 1 to generate jobs")
+            jobs = generate_jobs(n, rng)
 
             res = run_instance(
-                theta=theta, timestamps=timestamps, d=d,
+                jobs=jobs, d=d,
                 shadows=shadows, dispatches=dispatches,
                 seed=seed_t, with_opt=args.with_opt, opt_method=args.opt_method,
                 save_csv="", print_table=False,
