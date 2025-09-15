@@ -271,6 +271,112 @@ def run_instance(
     return out
 
 
+# Single-run helper for programmatic use.
+def run_once(
+    n: int,
+    d: float,
+    seed: int,
+    shadow: str,
+    dispatch: str,
+    with_opt: bool = False,
+    opt_method: str = "auto",
+) -> dict:
+    """
+    Single-run helper for programmatic use.
+    Mirrors the logic in run_instance for one (shadow, dispatch) combo,
+    generating a fresh theta/timestamps from (n, seed).
+
+    Returns a dict with the SAME keys used in run_instance rows:
+      n, d, seed, shadow, dispatch,
+      savings, pooled_pct, ratio_lp, lp_gap, ratio_opt, opt_gap,
+      pairs, solos, time_s, method
+    """
+    rng = np.random.default_rng(seed)
+    theta = rng.random(n)
+    timestamps = np.arange(n, dtype=float)
+
+    # LP once (upper bound + duals for HD)
+    t0 = time.perf_counter()
+    lp = compute_lp_relaxation(theta, reward_fn)
+    _lp_time = time.perf_counter() - t0  # kept for parity, not returned here
+    lp_total = float(lp["total_upper"])
+    duals = np.array(lp["duals"], dtype=float)
+
+    # Optional OPT once
+    opt_total = None
+    if with_opt:
+        t0 = time.perf_counter()
+        opt = compute_opt(theta, reward_fn, method=opt_method)
+        _opt_time = time.perf_counter() - t0  # available if needed
+        opt_total = float(opt["total_reward"])
+
+    # Build shadow vector (same choices as run_instance)
+    if shadow == "naive":
+        sp = np.zeros(n, dtype=float)
+    elif shadow == "pb":
+        sp = potential_vec(theta)
+    elif shadow == "hd":
+        sp = duals
+    else:
+        raise ValueError(f"Unknown shadow: {shadow}")
+
+    score_fn = make_local_score(reward_fn, sp)
+    w_fn = make_weight_fn(reward_fn, sp)
+
+    # Dispatch (same policies as run_instance)
+    t_run = time.perf_counter()
+    if dispatch == "greedy":
+        res = simulate(
+            theta, score_fn, reward_fn, "naive", timestamps, d,
+            policy="score", weight_fn=None, shadow=None, seed=seed,
+        )
+    elif dispatch == "greedy+":
+        res = simulate(
+            theta, score_fn, reward_fn, "threshold", timestamps, d,
+            policy="score", weight_fn=None, shadow=None, seed=seed,
+        )
+    elif dispatch == "batch":
+        res = simulate(
+            theta, score_fn, reward_fn, "policy", timestamps, d,
+            policy="batch", weight_fn=w_fn, shadow=sp, seed=seed,
+        )
+    elif dispatch == "rbatch":
+        res = simulate(
+            theta, score_fn, reward_fn, "policy", timestamps, d,
+            policy="rbatch", weight_fn=w_fn, shadow=sp, seed=seed,
+        )
+    else:
+        raise ValueError(f"Unknown dispatch: {dispatch}")
+    run_time = time.perf_counter() - t_run
+
+    # Metrics (same naming as your rows)
+    r = res["total_savings"]
+    pooled_pct = res["pooled_pct"]
+    ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
+    gap_lp = _safe_gap(lp_total, r)
+    ratio_opt = (r / opt_total) if (with_opt and opt_total and opt_total > 0) else None
+    gap_opt = (_safe_gap(opt_total, r) if (with_opt and opt_total is not None) else None)
+
+    out = {
+        "shadow": shadow,
+        "dispatch": dispatch,
+        "n": n,
+        "d": d,
+        "seed": seed,
+        "savings": r,
+        "pooled_pct": pooled_pct,
+        "ratio_lp": ratio_lp,
+        "lp_gap": gap_lp,
+        "ratio_opt": ratio_opt,
+        "opt_gap": gap_opt,
+        "pairs": len(res["pairs"]),
+        "solos": len(res["solos"]),
+        "time_s": run_time,
+        "method": ("score" if "greedy" in dispatch else dispatch),
+    }
+    return out
+
+
 # Optional CLI: run on arrays loaded from .npy files (theta, timestamps) for power users.
 def main():
     import argparse

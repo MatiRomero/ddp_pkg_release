@@ -13,3 +13,7 @@ results*.csv
 *.svg
 *.pdf
 *.log
+
+# experiment outputs
+results/
+figs/
