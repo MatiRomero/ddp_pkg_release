@@ -14,7 +14,6 @@ pip install -e .
 ```bash
 ddp-mwe01
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
-ddp-demo  --shadows naive,pb,hd --dispatch greedy,greedy+,batch,rbatch --n 100 --d 2 --seed 0 --with_opt
 ```
 
 ## Aggregate and Plot Results
