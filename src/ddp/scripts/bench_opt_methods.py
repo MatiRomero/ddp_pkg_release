@@ -122,6 +122,10 @@ def _benchmark_scenario(
     mismatches: list[dict] = []
 
     for trial in range(trials):
+        print(
+            f"Scenario {scenario.name}: trial {trial + 1}/{trials}",
+            flush=True,
+        )
         rng = np.random.default_rng(seed0 + trial)
         jobs = _generate_jobs(n, rng, scenario)
 
