@@ -8,8 +8,6 @@ Install in editable mode, then use the CLI entry points.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-# Optional plotting dependencies for ``ddp-mwe01 --plot`` and other figures
-pip install -e .[plot]
 ```
 
 ## Run
