@@ -1,151 +1,364 @@
-# src/ddp/scripts/sweep_param.py
-import argparse, csv, time, os
+"""Unified parameter sweeping and multi-trial runner utilities."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import os
+import time
+from collections import defaultdict
+from typing import Iterable
+
 import numpy as np
 
-from ddp.model import generate_jobs
+from ddp.model import Job, generate_jobs
 from ddp.scripts.run import run_instance
-try:
+
+try:  # pragma: no cover - tqdm is optional at runtime
     from tqdm import tqdm
-except Exception:
+except Exception:  # pragma: no cover - fallback when tqdm is absent
     tqdm = None
 
 
-def _mean(x):
-    return float(np.mean(x)) if len(x) else float('nan')
-
-def _std(x):
-    return float(np.std(x, ddof=1)) if len(x) > 1 else 0.0
+NUMERIC_TYPES: tuple[type, ...] = (int, float, np.integer, np.floating)
 
 
-def _parse_values(vals: str):
-    """Parse "1,2,3" or a range like "1:5:1" (floats allowed)."""
+def _parse_values(vals: str) -> list[float]:
+    """Parse "1,2,3" or an inclusive range like "1:5:1" (floats allowed)."""
+
     vals = vals.strip()
     if ":" in vals:
         a, b, *rest = vals.split(":")
         step = float(rest[0]) if rest else 1.0
-        a, b = float(a), float(b)
-        # inclusive range
-        n = int(round((b - a) / step)) + 1
-        return [a + i * step for i in range(n)]
+        a_f, b_f = float(a), float(b)
+        if step == 0:
+            raise ValueError("step size must be non-zero")
+        count = int(round((b_f - a_f) / step)) + 1
+        return [a_f + i * step for i in range(count)]
     return [float(x) for x in vals.split(",") if x.strip()]
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description="Sweep a parameter (d or n) over values; aggregate trials per value."
-    )
-    ap.add_argument("--param", choices=["d", "n"], required=True,
-                    help="which parameter to sweep")
-    ap.add_argument("--values", required=True,
-                    help='comma list "1,2,3" or range "1:5:1" (floats allowed)')
-    ap.add_argument("--trials", type=int, default=10)
-    ap.add_argument("--seed", type=int, default=0, help="start seed; uses seed..seed+trials-1")
-    ap.add_argument("--n", type=int, default=100, help="fixed n when sweeping d")
-    ap.add_argument("--d", type=float, default=5.0, help="fixed d when sweeping n")
-    ap.add_argument("--shadows", default="naive,pb,hd")
-    ap.add_argument("--dispatch", default="greedy,greedy+,batch,rbatch")
-    ap.add_argument("--with_opt", action="store_true")
-    ap.add_argument("--opt_method", default="auto", choices=["auto","networkx","ilp"])
-    ap.add_argument("--save_csv", default="results/sweep_results.csv")
-    args = ap.parse_args()
+def _is_nan_number(value: object) -> bool:
+    """Return ``True`` when *value* represents a NaN numeric value."""
 
-    # Normalize save path: if no directory provided, put it under results/
-    save_path = args.save_csv
-    if save_path:
-        dirpart = os.path.dirname(save_path)
-        if not dirpart:
-            save_path = os.path.join("results", save_path)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _prepare_jobs(
+    n: int,
+    rng: np.random.Generator,
+    *,
+    fix_origin_zero: bool,
+    flatten_axis: str | None,
+) -> list[Job]:
+    """Generate jobs and apply optional geometric transforms."""
+
+    jobs = generate_jobs(n, rng)
+    if fix_origin_zero:
+        jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
+
+    if flatten_axis is not None:
+        axis = 0 if flatten_axis == "x" else 1
+
+        def _flatten(point: Iterable[float]) -> tuple[float, float]:
+            coords = [float(point[0]), float(point[1])]
+            coords[axis] = 0.0
+            return coords[0], coords[1]
+
+        jobs = [
+            Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
+            for job in jobs
+        ]
+
+    return jobs
+
+
+def _aggregate_results(
+    buckets,
+    *,
+    n: int,
+    d: float,
+    trials: int,
+    seed0: int,
+    extra_meta: dict[str, float | int | str] | None,
+) -> tuple[list[dict], list[str]]:
+    """Aggregate rows by ``(shadow, dispatch)`` and compute summary statistics."""
+
+    meta_keys = {"n", "d", "seed", "shadow", "dispatch"}
+    numeric_keys: set[str] = set()
+    for rows in buckets.values():
+        for rec in rows:
+            for key, value in rec.items():
+                if key in meta_keys:
+                    continue
+                if isinstance(value, NUMERIC_TYPES) and not _is_nan_number(value):
+                    numeric_keys.add(key)
+
+    numeric_order = sorted(numeric_keys)
+
+    base_meta: dict[str, float | int | str] = {"n": n, "d": d, "trials": trials, "seed0": seed0}
+    if extra_meta:
+        base_meta.update(extra_meta)
+
+    aggregated: list[dict] = []
+    for (shadow, dispatch), rows in sorted(buckets.items()):
+        row = {**base_meta, "shadow": shadow, "dispatch": dispatch}
+        for key in numeric_order:
+            values: list[float] = []
+            for rec in rows:
+                raw_val = rec.get(key)
+                if isinstance(raw_val, NUMERIC_TYPES) and not _is_nan_number(raw_val):
+                    values.append(float(raw_val))
+            if not values:
+                mean = float("nan")
+                std = float("nan")
+            elif len(values) == 1:
+                mean = values[0]
+                std = 0.0
+            else:
+                mean = float(np.mean(values))
+                std = float(np.std(values, ddof=1))
+            row[f"mean_{key}"] = mean
+            row[f"std_{key}"] = std
+        aggregated.append(row)
+
+    return aggregated, numeric_order
+
+
+def _run_trials_for_config(
+    *,
+    n: int,
+    d: float,
+    args: argparse.Namespace,
+    shadows: list[str],
+    dispatches: list[str],
+    desc: str | None,
+    extra_meta: dict[str, float | int | str] | None,
+) -> tuple[list[dict], list[str]]:
+    """Run ``args.trials`` experiments for a specific ``(n, d)`` configuration."""
+
+    if n <= 1:
+        raise ValueError("Number of jobs n must exceed one")
+
+    buckets = defaultdict(list)
+
+    show_tip = args.trials > 1 and tqdm is None and not getattr(args, "_tqdm_tip_shown", False)
+    if show_tip:
+        print("(Tip) Install tqdm for a progress bar: pip install tqdm")
+        setattr(args, "_tqdm_tip_shown", True)
+
+    pbar = None
+    if args.trials > 1 and tqdm is not None:
+        pbar = tqdm(total=args.trials, desc=desc or "Trials", unit="trial")
+
+    for offset in range(args.trials):
+        seed = args.seed0 + offset
+        rng = np.random.default_rng(seed)
+        jobs = _prepare_jobs(
+            n,
+            rng,
+            fix_origin_zero=args.fix_origin_zero,
+            flatten_axis=args.flatten_axis,
+        )
+        result = run_instance(
+            jobs=jobs,
+            d=d,
+            shadows=shadows,
+            dispatches=dispatches,
+            seed=seed,
+            with_opt=args.with_opt,
+            opt_method=args.opt_method,
+            save_csv="",
+            print_table=False,
+            return_details=False,
+            print_matches=False,
+        )
+        for record in result["rows"]:
+            buckets[(record["shadow"], record["dispatch"])].append(record)
+        if pbar is not None:
+            pbar.update(1)
+
+    if pbar is not None:
+        pbar.close()
+
+    return _aggregate_results(
+        buckets,
+        n=n,
+        d=d,
+        trials=args.trials,
+        seed0=args.seed0,
+        extra_meta=extra_meta,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run multiple trials for SHADOW×DISPATCH configurations, optionally sweeping "
+            "a parameter across values."
+        )
+    )
+    parser.add_argument("--param", choices=["d", "n"], help="Parameter to sweep (optional)")
+    parser.add_argument(
+        "--values",
+        help="Comma list '1,2,3' or inclusive range 'start:stop:step' for --param sweeps",
+    )
+    parser.add_argument("--n", type=int, default=500, help="Number of jobs per trial")
+    parser.add_argument("--d", type=float, default=5.0, help="Time window parameter d")
+    parser.add_argument("--trials", type=int, default=20, help="Trials per configuration")
+    parser.add_argument(
+        "--seed0",
+        "--seed",
+        dest="seed0",
+        type=int,
+        default=0,
+        help="Starting seed; uses seed0..seed0+trials-1",
+    )
+    parser.add_argument("--shadows", default="naive,pb,hd", help="Comma-separated shadow list")
+    parser.add_argument(
+        "--dispatch",
+        default="greedy,greedy+,batch,rbatch",
+        help="Comma-separated dispatch policies",
+    )
+    parser.add_argument("--outdir", default="results", help="Directory for CSV output")
+    parser.add_argument(
+        "--save_csv",
+        default="results_agg.csv",
+        help="Filename for aggregated CSV (written inside --outdir unless absolute)",
+    )
+    parser.add_argument("--with_opt", action="store_true", help="Compute OPT baseline as well")
+    parser.add_argument(
+        "--opt_method",
+        default="auto",
+        choices=["auto", "networkx", "ilp"],
+        help="Optimization backend when --with_opt is supplied",
+    )
+    parser.add_argument(
+        "--fix_origin_zero",
+        action="store_true",
+        help="Set every generated job origin to the depot at (0, 0)",
+    )
+    parser.add_argument(
+        "--flatten_axis",
+        choices=["x", "y"],
+        help="Project all jobs onto a single axis by zeroing the chosen coordinate",
+    )
+
+    args = parser.parse_args()
+
+    sweep_mode = args.param is not None or args.values is not None
+    if sweep_mode and not (args.param and args.values):
+        parser.error("Both --param and --values must be provided to sweep a parameter")
+    if not sweep_mode and args.values:
+        parser.error("--values requires --param to be specified")
 
     shadows = [s.strip().lower() for s in args.shadows.split(",") if s.strip()]
+    if not shadows:
+        parser.error("No valid shadows supplied via --shadows")
     dispatches = [d.strip().lower() for d in args.dispatch.split(",") if d.strip()]
-    values = _parse_values(args.values)
+    if not dispatches:
+        parser.error("No valid dispatch policies supplied via --dispatch")
 
-    if args.param == "d":
-        print(f"Sweeping d over {values} | trials={args.trials} | n={args.n} (fixed)")
+    if args.save_csv:
+        if os.path.isabs(args.save_csv) or not args.outdir:
+            save_path = args.save_csv
+        else:
+            os.makedirs(args.outdir, exist_ok=True)
+            save_path = os.path.join(args.outdir, args.save_csv)
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
     else:
-        print(f"Sweeping n over {values} | trials={args.trials} | d={args.d} (fixed)")
+        save_path = ""
 
     t0 = time.perf_counter()
 
-    out_rows = []
-    for v in values:
-        agg = {}  # (shadow,dispatch) -> dict of lists
-        # Resolve n,d once per parameter value
+    all_rows: list[dict] = []
+    metric_union: set[str] = set()
+
+    if sweep_mode:
+        values = _parse_values(args.values)
         if args.param == "d":
-            n = args.n
-            d = float(v)
-        else:
-            n = int(round(v))
-            d = args.d
-        # Single header per value
-        print(f"\n== Sweeping {args.param} = {v} (n={n}, d={d}) | trials={args.trials} ==")
-        # Progress bar per value
-        if args.trials > 1 and tqdm is None:
-            print("(Tip) Install tqdm for a progress bar: pip install tqdm")
-        pbar = tqdm(total=args.trials, desc=f"{args.param}={v}", unit="trial") if (args.trials > 1 and tqdm is not None) else None
-        for t in range(args.trials):
-            seed_t = args.seed + t
-
-            rng = np.random.default_rng(seed_t)
-            if n <= 1:
-                raise ValueError("Sweep requires n > 1 to generate jobs")
-            jobs = generate_jobs(n, rng)
-
-            res = run_instance(
-                jobs=jobs, d=d,
-                shadows=shadows, dispatches=dispatches,
-                seed=seed_t, with_opt=args.with_opt, opt_method=args.opt_method,
-                save_csv="", print_table=False,
+            print(
+                f"Sweeping d over {values} | trials={args.trials} | n={args.n} (fixed)",
+                flush=True,
             )
-            if pbar is not None:
-                pbar.update(1)
+        else:
+            print(
+                f"Sweeping n over {values} | trials={args.trials} | d={args.d} (fixed)",
+                flush=True,
+            )
 
-        if pbar is not None:
-            pbar.close()
-
-        # After trials, write one row per (shadow,dispatch) with means and stds for ALL metrics
-        for (sh, disp), data in sorted(agg.items()):
-            mean_sav, std_sav = _mean(data["savings"]), _std(data["savings"])
-            mean_pool, std_pool = _mean(data["pooled"]), _std(data["pooled"])
-            mean_rlp = _mean(data["ratio_lp"]) if data["ratio_lp"] else float('nan')
-            std_rlp  = _std(data["ratio_lp"])  if len(data["ratio_lp"]) > 1 else 0.0
-            if args.with_opt and data["ratio_opt"]:
-                mean_ropt = _mean(data["ratio_opt"])
-                std_ropt  = _std(data["ratio_opt"]) if len(data["ratio_opt"]) > 1 else 0.0
+        for value in values:
+            if args.param == "d":
+                current_n = args.n
+                current_d = float(value)
             else:
-                mean_ropt = float('nan')
-                std_ropt  = 0.0
+                current_n = int(round(value))
+                current_d = args.d
+            print(
+                f"\n== Sweeping {args.param} = {value} (n={current_n}, d={current_d}) | "
+                f"trials={args.trials} ==",
+                flush=True,
+            )
+            rows, metrics = _run_trials_for_config(
+                n=current_n,
+                d=current_d,
+                args=args,
+                shadows=shadows,
+                dispatches=dispatches,
+                desc=f"{args.param}={value}",
+                extra_meta={"param": args.param, "param_value": float(value)},
+            )
+            all_rows.extend(rows)
+            metric_union.update(metrics)
+    else:
+        rows, metrics = _run_trials_for_config(
+            n=args.n,
+            d=args.d,
+            args=args,
+            shadows=shadows,
+            dispatches=dispatches,
+            desc=f"n={args.n}, d={args.d}",
+            extra_meta=None,
+        )
+        all_rows.extend(rows)
+        metric_union.update(metrics)
 
-            out_rows.append({
-                "param": args.param,
-                "param_value": float(v),
-                "trials": args.trials,
-                "seed0": args.seed,
-                "n": (n if args.param == "n" else args.n),
-                "d": (d if args.param == "d" else args.d),
-                "shadow": sh,
-                "dispatch": disp,
-                # means
-                "mean_savings": mean_sav,
-                "mean_pooled_pct": mean_pool,
-                "mean_ratio_lp": mean_rlp,
-                **({"mean_ratio_opt": mean_ropt} if args.with_opt else {}),
-                # stds
-                "std_savings": std_sav,
-                "std_pooled_pct": std_pool,
-                "std_ratio_lp": std_rlp,
-                **({"std_ratio_opt": std_ropt} if args.with_opt else {}),
-            })
+    metric_list = sorted(metric_union)
+    for row in all_rows:
+        for metric in metric_list:
+            row.setdefault(f"mean_{metric}", float("nan"))
+            row.setdefault(f"std_{metric}", float("nan"))
 
-    # write CSV
-    if out_rows:
-        with open(save_path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
-            w.writeheader(); w.writerows(out_rows)
-        print(f"\nWrote {len(out_rows)} rows to {save_path}")
-    print(f"Done in {time.perf_counter() - t0:.2f}s")
+    duration = time.perf_counter() - t0
+
+    if all_rows and save_path:
+        fieldnames = []
+        if any("param" in row for row in all_rows):
+            fieldnames.extend(["param", "param_value"])
+        fieldnames.extend(["shadow", "dispatch", "n", "d", "trials", "seed0"])
+        fieldnames.extend([f"mean_{m}" for m in metric_list])
+        fieldnames.extend([f"std_{m}" for m in metric_list])
+        with open(save_path, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(all_rows)
+        abs_path = os.path.abspath(save_path)
+        print(f"Wrote {abs_path} with {len(all_rows)} rows in {duration:.2f}s")
+    else:
+        print(f"Completed {len(all_rows)} aggregated rows in {duration:.2f}s")
+
+    if metric_list:
+        print("Aggregated metrics:", ", ".join(metric_list))
+    else:
+        print("Aggregated metrics: (none)")
 
 
 if __name__ == "__main__":
     main()
+
