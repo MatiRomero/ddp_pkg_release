@@ -1,27 +1,33 @@
+from typing import Sequence
+
 import numpy as np
+
 from ddp.engine.opt import max_weight_matching_subset
+from ddp.model import Job
+
 
 def simulate(
-    theta,
+    jobs: Sequence[Job],
     score_fn,           # local score(i,j,theta) = reward - s_j
     reward_fn,          # reward(i,j,theta)
     decision_rule="naive",         # 'naive' or 'threshold' (ignored for batch/rbatch)
-    timestamps=None,               # array or None → 0,1,2,...
+    timestamps=None,               # array or None → 1,2,3,...
     time_window=None,              # scalar or array
     policy="score",                # 'score' | 'batch' | 'rbatch'
     weight_fn=None,                # base weight for matching: reward - s_i - s_j
     shadow=None,                   # vector s_i (needed for critical adjustment)
     seed=0,
 ):
-    n = len(theta)
+    jobs = list(jobs)
+    n = len(jobs)
 
     # time inputs
     if timestamps is None:
-        timestamps = np.arange(n, dtype=float)
+        timestamps = np.array([job.timestamp for job in jobs], dtype=float)
     else:
         timestamps = np.asarray(timestamps, dtype=float)
         if len(timestamps) != n:
-            raise ValueError("len(timestamps) must equal len(theta)")
+            raise ValueError("len(timestamps) must equal len(jobs)")
     if time_window is None:
         raise ValueError("time_window must be provided (scalar or array-like)")
     if np.isscalar(time_window):
@@ -29,7 +35,7 @@ def simulate(
     else:
         tw = np.asarray(time_window, dtype=float)
         if len(tw) != n:
-            raise ValueError("len(time_window) must equal len(theta)")
+            raise ValueError("len(time_window) must equal len(jobs)")
         if np.any(tw < 0):
             raise ValueError("time_window values must be non-negative")
 
@@ -64,10 +70,10 @@ def simulate(
                     if j in C: w += float(shadow[j])
                 return w
 
-            result = max_weight_matching_subset(list(available), theta, reward_fn, weight_fn=w_eff, method="auto")
+            result = max_weight_matching_subset(list(available), jobs, reward_fn, weight_fn=w_eff, method="auto")
             matched = set()
             for (i, j, w_weight) in result["pairs"]:
-                r = float(reward_fn(i, j, theta))
+                r = float(reward_fn(i, j, jobs))
                 total_savings += r
                 pairs.append((i, j, float(w_weight), r))
                 matched.add(i); matched.add(j)
@@ -89,7 +95,7 @@ def simulate(
                         if b in C: w += float(shadow[b])
                     return w
 
-                result = max_weight_matching_subset(list(available), theta, reward_fn, weight_fn=w_eff_i, method="auto")
+                result = max_weight_matching_subset(list(available), jobs, reward_fn, weight_fn=w_eff_i, method="auto")
                 partner = None; w_ij = None
                 for (u, v, w) in result["pairs"]:
                     a, b = (u, v) if u < v else (v, u)
@@ -98,7 +104,7 @@ def simulate(
                     if b == i:
                         partner, w_ij = a, float(w); break
                 if partner is not None:
-                    r = float(reward_fn(i, partner, theta))
+                    r = float(reward_fn(i, partner, jobs))
                     total_savings += r
                     pairs.append((i, partner, float(w_ij), r))
                     available.discard(i); available.discard(partner)
@@ -114,9 +120,9 @@ def simulate(
                 continue
             candidates = [j for j in available if j != i]
             if candidates:
-                j = max(candidates, key=lambda j_: score_fn(i, j_, theta))
-                score = float(score_fn(i, j, theta))
-                reward = float(reward_fn(i, j, theta))
+                j = max(candidates, key=lambda j_: score_fn(i, j_, jobs))
+                score = float(score_fn(i, j, jobs))
+                reward = float(reward_fn(i, j, jobs))
             else:
                 j, score, reward = None, -1.0, 0.0
 

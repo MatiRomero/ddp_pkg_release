@@ -4,6 +4,8 @@ import csv, time, argparse, math, os
 from collections import defaultdict
 import numpy as np
 from typing import Dict, List, Any
+
+from ddp.model import Job, generate_jobs
 from ddp.scripts.run import run_instance  # ← replaced import
 
 try:
@@ -23,6 +25,20 @@ def main():
     ap.add_argument("--save_csv", default="results_agg.csv", help="Filename (written inside --outdir)")
     ap.add_argument("--with_opt", action="store_true")
     ap.add_argument("--opt_method", default="auto", choices=["auto","networkx","ilp"])
+    ap.add_argument(
+        "--fix_origin_zero",
+        action="store_true",
+        help="Set every generated job's origin to the depot at (0, 0).",
+    )
+    ap.add_argument(
+        "--flatten_axis",
+        choices=["x", "y"],
+        help=(
+            "Project all jobs onto a single axis by zeroing the chosen coordinate "
+            "for both origins and destinations."
+        ),
+    )
+
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -41,9 +57,27 @@ def main():
     for t in range(args.trials):
         seed = args.seed0 + t
         rng = np.random.default_rng(seed)
-        theta = rng.random(args.n)
-        timestamps = np.arange(args.n, dtype=float)
-        res = run_instance(theta=theta, timestamps=timestamps, d=args.d, shadows=shadows, dispatches=dispatches, seed=seed,
+        if args.n <= 1:
+            raise ValueError("run_many requires n > 1 to generate jobs")
+        jobs = generate_jobs(args.n, rng)
+        if args.fix_origin_zero:
+            jobs = [
+                Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp)
+                for job in jobs
+            ]
+        if args.flatten_axis is not None:
+            axis = 0 if args.flatten_axis == "x" else 1
+
+            def _flatten(point: tuple[float, float]) -> tuple[float, float]:
+                coords = [point[0], point[1]]
+                coords[axis] = 0.0
+                return coords[0], coords[1]
+
+            jobs = [
+                Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
+                for job in jobs
+            ]
+        res = run_instance(jobs=jobs, d=args.d, shadows=shadows, dispatches=dispatches, seed=seed,
                            with_opt=args.with_opt, opt_method=args.opt_method, save_csv="", print_table=False,
                            return_details=False, print_matches=False)
         for rec in res["rows"]:
