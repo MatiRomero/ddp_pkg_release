@@ -161,9 +161,9 @@ def main() -> None:
         "--values",
         help="Comma list '1,2,3' or inclusive range 'start:stop:step' for --param sweeps",
     )
-    parser.add_argument("--n", type=int, default=500, help="Number of jobs per trial")
-    parser.add_argument("--d", type=float, default=5.0, help="Time window parameter d")
-    parser.add_argument("--trials", type=int, default=20, help="Trials per configuration")
+    parser.add_argument("--n", type=int, default=100, help="Number of jobs per trial")
+    parser.add_argument("--d", type=float, default=2.0, help="Time window parameter d")
+    parser.add_argument("--trials", type=int, default=10, help="Trials per configuration")
     parser.add_argument(
         "--seed0",
         "--seed",

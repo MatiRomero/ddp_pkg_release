@@ -17,3 +17,4 @@ results*.csv
 # experiment outputs
 results/
 figs/
+sweeps/
