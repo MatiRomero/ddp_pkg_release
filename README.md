@@ -21,7 +21,7 @@ ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
 To run multiple trials and aggregate results across all shadow × dispatch combinations:
 
 ```bash
-python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --save_csv results_agg.csv
+python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --with_opt --save_csv results_agg.csv
 ```
 
 This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean and std columns for every metric.
