@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import time
-from collections import defaultdict
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import numpy as np
 
@@ -21,7 +19,28 @@ except Exception:  # pragma: no cover - fallback when tqdm is absent
     tqdm = None
 
 
-NUMERIC_TYPES: tuple[type, ...] = (int, float, np.integer, np.floating)
+CSV_FIELD_ORDER = [
+    "param",
+    "param_value",
+    "trial_index",
+    "seed",
+    "n_fixed",
+    "d_fixed",
+    "shadow",
+    "dispatch",
+    "n",
+    "d",
+    "savings",
+    "pooled_pct",
+    "ratio_lp",
+    "lp_gap",
+    "ratio_opt",
+    "opt_gap",
+    "pairs",
+    "solos",
+    "time_s",
+    "method",
+]
 
 
 def _parse_values(vals: str) -> list[float]:
@@ -37,15 +56,6 @@ def _parse_values(vals: str) -> list[float]:
         count = int(round((b_f - a_f) / step)) + 1
         return [a_f + i * step for i in range(count)]
     return [float(x) for x in vals.split(",") if x.strip()]
-
-
-def _is_nan_number(value: object) -> bool:
-    """Return ``True`` when *value* represents a NaN numeric value."""
-
-    try:
-        return math.isnan(float(value))
-    except (TypeError, ValueError):
-        return False
 
 
 def _prepare_jobs(
@@ -77,58 +87,6 @@ def _prepare_jobs(
     return jobs
 
 
-def _aggregate_results(
-    buckets,
-    *,
-    n: int,
-    d: float,
-    trials: int,
-    seed0: int,
-    extra_meta: dict[str, float | int | str] | None,
-) -> tuple[list[dict], list[str]]:
-    """Aggregate rows by ``(shadow, dispatch)`` and compute summary statistics."""
-
-    meta_keys = {"n", "d", "seed", "shadow", "dispatch"}
-    numeric_keys: set[str] = set()
-    for rows in buckets.values():
-        for rec in rows:
-            for key, value in rec.items():
-                if key in meta_keys:
-                    continue
-                if isinstance(value, NUMERIC_TYPES) and not _is_nan_number(value):
-                    numeric_keys.add(key)
-
-    numeric_order = sorted(numeric_keys)
-
-    base_meta: dict[str, float | int | str] = {"n": n, "d": d, "trials": trials, "seed0": seed0}
-    if extra_meta:
-        base_meta.update(extra_meta)
-
-    aggregated: list[dict] = []
-    for (shadow, dispatch), rows in sorted(buckets.items()):
-        row = {**base_meta, "shadow": shadow, "dispatch": dispatch}
-        for key in numeric_order:
-            values: list[float] = []
-            for rec in rows:
-                raw_val = rec.get(key)
-                if isinstance(raw_val, NUMERIC_TYPES) and not _is_nan_number(raw_val):
-                    values.append(float(raw_val))
-            if not values:
-                mean = float("nan")
-                std = float("nan")
-            elif len(values) == 1:
-                mean = values[0]
-                std = 0.0
-            else:
-                mean = float(np.mean(values))
-                std = float(np.std(values, ddof=1))
-            row[f"mean_{key}"] = mean
-            row[f"std_{key}"] = std
-        aggregated.append(row)
-
-    return aggregated, numeric_order
-
-
 def _run_trials_for_config(
     *,
     n: int,
@@ -137,14 +95,12 @@ def _run_trials_for_config(
     shadows: list[str],
     dispatches: list[str],
     desc: str | None,
-    extra_meta: dict[str, float | int | str] | None,
-) -> tuple[list[dict], list[str]]:
-    """Run ``args.trials`` experiments for a specific ``(n, d)`` configuration."""
+    extra_meta: dict[str, float | int | str | None] | None,
+) -> Iterator[dict]:
+    """Yield rows for ``args.trials`` experiments at a given ``(n, d)`` setting."""
 
     if n <= 1:
         raise ValueError("Number of jobs n must exceed one")
-
-    buckets = defaultdict(list)
 
     show_tip = args.trials > 1 and tqdm is None and not getattr(args, "_tqdm_tip_shown", False)
     if show_tip:
@@ -178,21 +134,19 @@ def _run_trials_for_config(
             print_matches=False,
         )
         for record in result["rows"]:
-            buckets[(record["shadow"], record["dispatch"])].append(record)
+            enriched = dict(record)
+            enriched["seed"] = seed
+            enriched["trial_index"] = offset
+            enriched["n"] = n
+            enriched["d"] = d
+            if extra_meta:
+                enriched.update(extra_meta)
+            yield enriched
         if pbar is not None:
             pbar.update(1)
 
     if pbar is not None:
         pbar.close()
-
-    return _aggregate_results(
-        buckets,
-        n=n,
-        d=d,
-        trials=args.trials,
-        seed0=args.seed0,
-        extra_meta=extra_meta,
-    )
 
 
 def main() -> None:
@@ -227,8 +181,11 @@ def main() -> None:
     parser.add_argument("--outdir", default="results", help="Directory for CSV output")
     parser.add_argument(
         "--save_csv",
-        default="results_agg.csv",
-        help="Filename for aggregated CSV (written inside --outdir unless absolute)",
+        default="results_trials.csv",
+        help=(
+            "Filename for per-trial CSV (written inside --outdir unless absolute); "
+            "rows are streamed as trials finish"
+        ),
     )
     parser.add_argument("--with_opt", action="store_true", help="Compute OPT baseline as well")
     parser.add_argument(
@@ -275,88 +232,101 @@ def main() -> None:
     else:
         save_path = ""
 
+    total_rows = 0
+    csv_handle = None
+    writer: csv.DictWriter | None = None
+    fieldnames: list[str] | None = None
     t0 = time.perf_counter()
 
-    all_rows: list[dict] = []
-    metric_union: set[str] = set()
+    try:
+        def record_row(row: dict) -> None:
+            nonlocal total_rows, writer, csv_handle, fieldnames
+            total_rows += 1
+            if not save_path:
+                return
+            if writer is None:
+                ordered = [field for field in CSV_FIELD_ORDER if field in row]
+                extras = [key for key in row if key not in ordered]
+                fieldnames = ordered + sorted(extras)
+                csv_handle = open(save_path, "w", newline="")
+                writer = csv.DictWriter(csv_handle, fieldnames=fieldnames)
+                writer.writeheader()
+            assert writer is not None and csv_handle is not None
+            writer.writerow(row)
+            csv_handle.flush()
 
-    if sweep_mode:
-        values = _parse_values(args.values)
-        if args.param == "d":
-            print(
-                f"Sweeping d over {values} | trials={args.trials} | n={args.n} (fixed)",
-                flush=True,
-            )
-        else:
-            print(
-                f"Sweeping n over {values} | trials={args.trials} | d={args.d} (fixed)",
-                flush=True,
-            )
-
-        for value in values:
+        if sweep_mode:
+            values = _parse_values(args.values)
             if args.param == "d":
-                current_n = args.n
-                current_d = float(value)
+                print(
+                    f"Sweeping d over {values} | trials={args.trials} | n={args.n} (fixed)",
+                    flush=True,
+                )
             else:
-                current_n = int(round(value))
-                current_d = args.d
-            print(
-                f"\n== Sweeping {args.param} = {value} (n={current_n}, d={current_d}) | "
-                f"trials={args.trials} ==",
-                flush=True,
-            )
-            rows, metrics = _run_trials_for_config(
-                n=current_n,
-                d=current_d,
+                print(
+                    f"Sweeping n over {values} | trials={args.trials} | d={args.d} (fixed)",
+                    flush=True,
+                )
+
+            for value in values:
+                if args.param == "d":
+                    current_n = args.n
+                    current_d = float(value)
+                else:
+                    current_n = int(round(value))
+                    current_d = args.d
+                print(
+                    f"\n== Sweeping {args.param} = {value} (n={current_n}, d={current_d}) | "
+                    f"trials={args.trials} ==",
+                    flush=True,
+                )
+                extra_meta = {
+                    "param": args.param,
+                    "param_value": float(value),
+                    "n_fixed": args.n if args.param == "d" else None,
+                    "d_fixed": args.d if args.param == "n" else None,
+                }
+                for row in _run_trials_for_config(
+                    n=current_n,
+                    d=current_d,
+                    args=args,
+                    shadows=shadows,
+                    dispatches=dispatches,
+                    desc=f"{args.param}={value}",
+                    extra_meta=extra_meta,
+                ):
+                    record_row(row)
+        else:
+            extra_meta = {
+                "param": None,
+                "param_value": None,
+                "n_fixed": args.n,
+                "d_fixed": args.d,
+            }
+            for row in _run_trials_for_config(
+                n=args.n,
+                d=args.d,
                 args=args,
                 shadows=shadows,
                 dispatches=dispatches,
-                desc=f"{args.param}={value}",
-                extra_meta={"param": args.param, "param_value": float(value)},
-            )
-            all_rows.extend(rows)
-            metric_union.update(metrics)
-    else:
-        rows, metrics = _run_trials_for_config(
-            n=args.n,
-            d=args.d,
-            args=args,
-            shadows=shadows,
-            dispatches=dispatches,
-            desc=f"n={args.n}, d={args.d}",
-            extra_meta=None,
-        )
-        all_rows.extend(rows)
-        metric_union.update(metrics)
-
-    metric_list = sorted(metric_union)
-    for row in all_rows:
-        for metric in metric_list:
-            row.setdefault(f"mean_{metric}", float("nan"))
-            row.setdefault(f"std_{metric}", float("nan"))
+                desc=f"n={args.n}, d={args.d}",
+                extra_meta=extra_meta,
+            ):
+                record_row(row)
+    finally:
+        if csv_handle is not None:
+            csv_handle.close()
 
     duration = time.perf_counter() - t0
 
-    if all_rows and save_path:
-        fieldnames = []
-        if any("param" in row for row in all_rows):
-            fieldnames.extend(["param", "param_value"])
-        fieldnames.extend(["shadow", "dispatch", "n", "d", "trials", "seed0"])
-        fieldnames.extend([f"mean_{m}" for m in metric_list])
-        fieldnames.extend([f"std_{m}" for m in metric_list])
-        with open(save_path, "w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
+    if save_path:
         abs_path = os.path.abspath(save_path)
-        print(f"Wrote {abs_path} with {len(all_rows)} rows in {duration:.2f}s")
+        if writer is not None:
+            print(f"Wrote {abs_path} with {total_rows} rows in {duration:.2f}s")
+        else:
+            print(f"No rows recorded; nothing written to {abs_path} ({duration:.2f}s)")
     else:
-        print(f"Completed {len(all_rows)} aggregated rows in {duration:.2f}s")
-
-    if metric_list:
-        print("Aggregated metrics:", ", ".join(metric_list))
-    else:
-        print("Aggregated metrics: (none)")
+        print(f"Completed {total_rows} trial rows in {duration:.2f}s")
 
 
 if __name__ == "__main__":
