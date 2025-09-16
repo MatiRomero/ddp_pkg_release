@@ -36,10 +36,10 @@ This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean an
 To generate plots from this CSV:
 
 ```bash
-python -m ddp.scripts.plot_many --csv results/results_agg.csv --outdir figs --with_std
+python -m ddp.scripts.plot_results --csv_agg results/results_agg.csv --mode grid --outdir figs --metric all
 ```
 
-This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated with mean ± std values. A `summary_sorted.csv` file is also written for quick inspection.
+This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated with mean ± std values when available.
 
 - Reward (toy): `min(theta[i], theta[j])`
 - Time model: `timestamps` + `time_window` (scalar or per-job)
@@ -92,3 +92,11 @@ python -m ddp.scripts.sweep_param \
 ```
 
 Adjust `--trials`, `--shadows`, or `--dispatch` as needed for your experiments. CSV rows are flushed as each `(shadow, dispatch, trial)` completes, so you can stop the run early and still inspect partial results.
+
+To visualise the sweep trends after aggregation:
+
+```bash
+python -m ddp.scripts.plot_results --csv_full sweeps/n100_d1-10_opt_1d.csv --mode sweep --metric mean_savings
+```
+
+Use `--include_policies` (comma-separated `shadow+dispatch` keys) to restrict which policy curves are shown.
