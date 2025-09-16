@@ -12,6 +12,7 @@ from typing import Callable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm.auto import tqdm
 
 from ddp.model import Job, generate_jobs
 from ddp.scripts.run import run_instance
@@ -158,6 +159,7 @@ def _run_sweep(
     metric: str,
     gamma_values: Sequence[float],
     tau_values: Sequence[float],
+    progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
 
@@ -174,65 +176,88 @@ def _run_sweep(
     records: list[dict] = []
     best_entries: list[tuple[GeometryPreset, str, float | None, float | None, float | None]] = []
 
-    for geom in GEOMETRIES:
-        for shadow in SHADOWS:
-            best_mean: float | None = None
-            best_gamma: float | None = None
-            best_tau: float | None = None
+    total_trials = (
+        len(GEOMETRIES)
+        * len(SHADOWS)
+        * len(tau_values)
+        * len(gamma_values)
+        * len(trial_jobs)
+    )
+    show_progress = progress and total_trials > 0
+    progress_bar = tqdm(
+        total=total_trials,
+        desc="Trials",
+        unit="trial",
+        disable=not show_progress,
+    )
 
-            for tau_index, tau in enumerate(tau_values):
-                for gamma_index, gamma in enumerate(gamma_values):
-                    values: list[float] = []
+    try:
+        for geom in GEOMETRIES:
+            for shadow in SHADOWS:
+                best_mean: float | None = None
+                best_gamma: float | None = None
+                best_tau: float | None = None
 
-                    for seed, job_variants in trial_jobs:
-                        jobs = job_variants[geom.name]
-                        result = run_instance(
-                            jobs=jobs,
-                            d=d,
-                            shadows=[shadow],
-                            dispatches=[dispatch],
-                            seed=seed,
-                            with_opt=False,
-                            save_csv="",
-                            print_table=False,
-                            return_details=False,
-                            print_matches=False,
-                            gamma=float(gamma),
-                            tau=float(tau),
+                for tau_index, tau in enumerate(tau_values):
+                    for gamma_index, gamma in enumerate(gamma_values):
+                        if show_progress:
+                            progress_bar.set_description(
+                                f"{geom.name}/{shadow} γ={_format_value(float(gamma))} τ={_format_value(float(tau))}"
+                            )
+                        values: list[float] = []
+
+                        for seed, job_variants in trial_jobs:
+                            jobs = job_variants[geom.name]
+                            result = run_instance(
+                                jobs=jobs,
+                                d=d,
+                                shadows=[shadow],
+                                dispatches=[dispatch],
+                                seed=seed,
+                                with_opt=False,
+                                save_csv="",
+                                print_table=False,
+                                return_details=False,
+                                print_matches=False,
+                                gamma=float(gamma),
+                                tau=float(tau),
+                            )
+                            row = result["rows"][0]
+                            metric_value = _extract_metric(row, metric)
+                            if metric_value is not None:
+                                values.append(metric_value)
+                            progress_bar.update()
+
+                        if values:
+                            mean_val = statistics.fmean(values)
+                            std_val = statistics.stdev(values) if len(values) > 1 else 0.0
+                            heatmap[geom.name][shadow][tau_index, gamma_index] = mean_val
+                            if best_mean is None or mean_val > best_mean:
+                                best_mean = mean_val
+                                best_gamma = float(gamma)
+                                best_tau = float(tau)
+                        else:
+                            mean_val = float("nan")
+                            std_val = float("nan")
+
+                        records.append(
+                            {
+                                "geometry": geom.name,
+                                "shadow": shadow,
+                                "gamma": float(gamma),
+                                "tau": float(tau),
+                                "dispatch": dispatch,
+                                "metric": metric,
+                                "mean": mean_val,
+                                "std": std_val,
+                                "trials": trials,
+                                "valid_trials": len(values),
+                            }
                         )
-                        row = result["rows"][0]
-                        metric_value = _extract_metric(row, metric)
-                        if metric_value is not None:
-                            values.append(metric_value)
 
-                    if values:
-                        mean_val = statistics.fmean(values)
-                        std_val = statistics.stdev(values) if len(values) > 1 else 0.0
-                        heatmap[geom.name][shadow][tau_index, gamma_index] = mean_val
-                        if best_mean is None or mean_val > best_mean:
-                            best_mean = mean_val
-                            best_gamma = float(gamma)
-                            best_tau = float(tau)
-                    else:
-                        mean_val = float("nan")
-                        std_val = float("nan")
-
-                    records.append(
-                        {
-                            "geometry": geom.name,
-                            "shadow": shadow,
-                            "gamma": float(gamma),
-                            "tau": float(tau),
-                            "dispatch": dispatch,
-                            "metric": metric,
-                            "mean": mean_val,
-                            "std": std_val,
-                            "trials": trials,
-                            "valid_trials": len(values),
-                        }
-                    )
-
-            best_entries.append((geom, shadow, best_mean, best_gamma, best_tau))
+                best_entries.append((geom, shadow, best_mean, best_gamma, best_tau))
+    finally:
+        progress_bar.close()
 
     return heatmap, records, best_entries
 
