@@ -31,6 +31,9 @@ python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --save
 #   --flatten_axis {x,y}     → collapse jobs onto a single axis (1-D experiments)
 ```
 
+The default dispatch set covers `greedy`, `greedy+`, `batch`, `rbatch`, and the new
+`rbatch+` variant (RBATCH with shadow potentials scaled by 0.5).
+
 This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean and std columns for every metric.
 
 To generate plots from this CSV:
@@ -43,7 +46,7 @@ This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated w
 
 - Reward (toy): `min(theta[i], theta[j])`
 - Time model: `timestamps` + `time_window` (scalar or per-job)
-- Batch/rbatch use critical-aware weights so for critical `i`: weight(i,j) = reward(i,j) - s_j
+- Batch/rbatch/rbatch+ use critical-aware weights so for critical `i`: weight(i,j) = reward(i,j) - s_j
 
 ## Parameter Sweep Examples
 
