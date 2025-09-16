@@ -80,8 +80,14 @@ def run_instance(
     print_table=True,
     return_details=False,
     print_matches=False,
+    gamma: float = 1.0,
+    tau: float = 0.0,
 ):
-    """Run the SHADOW × DISPATCH grid on a job instance."""
+    """Run the SHADOW × DISPATCH grid on a job instance.
+
+    Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative) and
+    ``tau`` (additive) before being used by the dispatch policies.
+    """
 
     jobs = list(jobs)
     n = len(jobs)
@@ -131,15 +137,18 @@ def run_instance(
 
     for sh in shadows:
         if sh == "naive":
-            sp = np.zeros(n, dtype=float)
+            sp_base = np.zeros(n, dtype=float)
         elif sh == "pb":
-            sp = potential_vec(lengths)
+            sp_base = potential_vec(lengths)
         elif sh == "hd":
-            sp = duals
+            sp_base = duals
         else:
             if print_table:
                 print(f"[skip] Unknown shadow: {sh}")
             continue
+
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma + tau
 
         score_fn = make_local_score(reward_fn, sp)
         w_fn = make_weight_fn(reward_fn, sp)
@@ -276,8 +285,14 @@ def run_once(
     dispatch: str,
     with_opt: bool = False,
     opt_method: str = "auto",
+    gamma: float = 1.0,
+    tau: float = 0.0,
 ) -> dict:
-    """Single-run helper mirroring :func:`run_instance` for one configuration."""
+    """Single-run helper mirroring :func:`run_instance` for one configuration.
+
+    The optional ``gamma`` and ``tau`` parameters mirror those in
+    :func:`run_instance`.
+    """
 
     rng = np.random.default_rng(seed)
     if n <= 1:
@@ -295,13 +310,16 @@ def run_once(
         opt_total = float(opt["total_reward"])
 
     if shadow == "naive":
-        sp = np.zeros(n, dtype=float)
+        sp_base = np.zeros(n, dtype=float)
     elif shadow == "pb":
-        sp = potential_vec(lengths)
+        sp_base = potential_vec(lengths)
     elif shadow == "hd":
-        sp = duals
+        sp_base = duals
     else:
         raise ValueError(f"Unknown shadow: {shadow}")
+
+    sp = np.array(sp_base, dtype=float, copy=True)
+    sp = sp * gamma + tau
 
     score_fn = make_local_score(reward_fn, sp)
     w_fn = make_weight_fn(reward_fn, sp)
@@ -399,6 +417,18 @@ def main() -> None:
     p.add_argument("--save_csv", default="")
     p.add_argument("--print_matches", action="store_true")
     p.add_argument("--return_details", action="store_true")
+    p.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="Scale factor applied to the shadow potentials before dispatch.",
+    )
+    p.add_argument(
+        "--tau",
+        type=float,
+        default=0.0,
+        help="Additive offset applied to the shadow potentials before dispatch.",
+    )
     args = p.parse_args()
 
     if not args.jobs:
@@ -436,6 +466,8 @@ def main() -> None:
         print_table=True,
         return_details=args.return_details,
         print_matches=args.print_matches,
+        gamma=args.gamma,
+        tau=args.tau,
     )
 
 
