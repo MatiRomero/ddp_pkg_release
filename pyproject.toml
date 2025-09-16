@@ -32,6 +32,7 @@ ddp-sweep = "ddp.scripts.sweep_param:main"
 ddp-plot  = "ddp.scripts.plot_results:main"
 ddp-plot-sweep = "ddp.scripts.plot_sweep:main"
 ddp-bench-opt = "ddp.scripts.bench_opt_methods:main"
+ddp-shadow-sweep = "ddp.scripts.shadow_sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
