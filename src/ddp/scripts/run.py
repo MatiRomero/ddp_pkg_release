@@ -14,8 +14,8 @@ from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward
 
 
-RBATCH_PLUS_GAMMA = 0.5
-RBATCH_PLUS_TAU = 0.0
+PLUS_DISPATCH_GAMMA = 0.5
+PLUS_DISPATCH_TAU = 0.0
 
 DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
@@ -82,7 +82,7 @@ def run_instance(
     jobs: Sequence[Job],
     d,
     shadows=("naive", "pb", "hd"),
-    dispatches=("greedy", "greedy+", "batch", "rbatch", "rbatch+"),
+    dispatches=("greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"),
     seed=0,
     with_opt=False,
     opt_method="auto",
@@ -97,8 +97,9 @@ def run_instance(
 
     Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative) and
     ``tau`` (additive) before being used by the dispatch policies. The special
-    dispatch label ``rbatch+`` applies the RBATCH policy with a fixed scaling of
-    ``gamma = 0.5`` and ``tau = 0.0`` regardless of the values supplied here.
+    dispatch labels ``batch+`` and ``rbatch+`` apply the corresponding policy
+    with a fixed scaling of ``gamma = 0.5`` and ``tau = 0.0`` regardless of the
+    values supplied here.
     """
 
     jobs = list(jobs)
@@ -166,14 +167,19 @@ def run_instance(
         w_fn = make_weight_fn(reward_fn, sp)
 
         extra_dispatch_state: dict[str, DispatchState] = {}
-        if "rbatch+" in dispatches:
+        plus_variants = {"batch+", "rbatch+"}
+        if any(label in dispatches for label in plus_variants):
             sp_plus = np.array(sp_base, dtype=float, copy=True)
-            sp_plus = sp_plus * RBATCH_PLUS_GAMMA + RBATCH_PLUS_TAU
-            extra_dispatch_state["rbatch+"] = (
-                make_local_score(reward_fn, sp_plus),
-                make_weight_fn(reward_fn, sp_plus),
-                sp_plus,
-            )
+            sp_plus = sp_plus * PLUS_DISPATCH_GAMMA + PLUS_DISPATCH_TAU
+            score_plus = make_local_score(reward_fn, sp_plus)
+            weight_plus = make_weight_fn(reward_fn, sp_plus)
+            for label in plus_variants:
+                if label in dispatches:
+                    extra_dispatch_state[label] = (
+                        score_plus,
+                        weight_plus,
+                        sp_plus,
+                    )
 
         for disp in dispatches:
             t_run = time.perf_counter()
@@ -211,6 +217,19 @@ def run_instance(
                     policy="batch",
                     weight_fn=w_fn,
                     shadow=sp,
+                    seed=seed,
+                )
+            elif disp == "batch+":
+                score_plus, weight_plus, sp_plus = extra_dispatch_state["batch+"]
+                res = simulate(
+                    jobs,
+                    score_plus,
+                    reward_fn,
+                    "policy",
+                    time_window=d,
+                    policy="batch",
+                    weight_fn=weight_plus,
+                    shadow=sp_plus,
                     seed=seed,
                 )
             elif disp == "rbatch":
@@ -326,9 +345,9 @@ def run_once(
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
     The optional ``gamma`` and ``tau`` parameters mirror those in
-    :func:`run_instance`. Selecting ``dispatch="rbatch+"`` invokes the RBATCH
-    heuristic with fixed ``gamma = 0.5`` and ``tau = 0.0`` regardless of the
-    provided values.
+    :func:`run_instance`. Selecting ``dispatch="batch+"`` or ``dispatch="rbatch+"``
+    invokes the respective heuristics with fixed ``gamma = 0.5`` and
+    ``tau = 0.0`` regardless of the provided values.
     """
 
     rng = np.random.default_rng(seed)
@@ -398,6 +417,22 @@ def run_once(
             shadow=sp,
             seed=seed,
         )
+    elif dispatch == "batch+":
+        sp_plus = np.array(sp_base, dtype=float, copy=True)
+        sp_plus = sp_plus * PLUS_DISPATCH_GAMMA + PLUS_DISPATCH_TAU
+        score_fn_plus = make_local_score(reward_fn, sp_plus)
+        w_fn_plus = make_weight_fn(reward_fn, sp_plus)
+        res = simulate(
+            jobs,
+            score_fn_plus,
+            reward_fn,
+            "policy",
+            time_window=d,
+            policy="batch",
+            weight_fn=w_fn_plus,
+            shadow=sp_plus,
+            seed=seed,
+        )
     elif dispatch == "rbatch":
         res = simulate(
             jobs,
@@ -412,7 +447,7 @@ def run_once(
         )
     elif dispatch == "rbatch+":
         sp_plus = np.array(sp_base, dtype=float, copy=True)
-        sp_plus = sp_plus * RBATCH_PLUS_GAMMA + RBATCH_PLUS_TAU
+        sp_plus = sp_plus * PLUS_DISPATCH_GAMMA + PLUS_DISPATCH_TAU
         score_fn_plus = make_local_score(reward_fn, sp_plus)
         w_fn_plus = make_weight_fn(reward_fn, sp_plus)
         res = simulate(
@@ -466,10 +501,10 @@ def main() -> None:
     p.add_argument("--shadows", default="naive,pb,hd")
     p.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,rbatch,rbatch+",
+        default="greedy,greedy+,batch,batch+,rbatch,rbatch+",
         help=(
-            "Comma-separated dispatch policies. The 'rbatch+' variant uses the RBATCH "
-            "policy with shadow potentials scaled by 0.5."
+            "Comma-separated dispatch policies. "
+            "The '+ variants enforce BATCH/RBATCH with shadow potentials scaled by 0.5."
         ),
     )
     p.add_argument("--with_opt", action="store_true")
