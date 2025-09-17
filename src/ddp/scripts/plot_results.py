@@ -345,6 +345,7 @@ def _plot_metric_sweep(
     title: str | None,
     csv_hint: str | None,
     out_arg: str | None,
+    show_legend: bool = True,
 ) -> Path:
     std_col = None
     if metric.startswith("mean_"):
@@ -407,7 +408,7 @@ def _plot_metric_sweep(
 
     ax.grid(True, which="both", alpha=0.3)
 
-    if drew_any:
+    if drew_any and show_legend:
         ax.legend(
             loc="upper left",
             bbox_to_anchor=(1.02, 1.0),
@@ -449,6 +450,7 @@ def _run_sweep_mode(args: argparse.Namespace, data: LoadedData) -> None:
                 title=args.title,
                 csv_hint=args.csv_agg or args.csv_full,
                 out_arg=args.out,
+                show_legend=not args.no_legend,
             )
         )
 
@@ -511,6 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output path or directory for sweep mode (mirrors legacy plot_sweep behaviour).",
     )
     parser.add_argument("--title", default="", help="Custom title for sweep mode (single metric).")
+    parser.add_argument(
+        "--no-legend",
+        action="store_true",
+        help="Hide legends in sweep mode (useful when plotting many policies).",
+    )
 
     return parser
 
