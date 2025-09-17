@@ -32,7 +32,9 @@ def _coerce_numeric(series: pd.Series) -> pd.Series:
 def _derive_opt_total(df: pd.DataFrame) -> pd.Series:
     """Return a Series containing the total OPT value for each row."""
 
-    opt_total = pd.Series(pd.NA, index=df.index, dtype="float64")
+    # Seed the output with a nullable floating dtype so later fillna/astype operations
+    # can seamlessly combine extension arrays derived from other nullable columns.
+    opt_total = pd.Series(pd.NA, index=df.index, dtype="Float64")
 
     if "opt_total" in df.columns:
         opt_total = _coerce_numeric(df["opt_total"]).astype("Float64")
