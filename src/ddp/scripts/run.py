@@ -312,6 +312,51 @@ def run_instance(
                         f"    -> matches {sh}/{disp}: pairs={pairs_idx}  solos={info['solos']}"
                     )
 
+    if with_opt and opt_total is not None:
+        opt_pairs_list = list(opt_pairs) if opt_pairs is not None else []
+        opt_pair_indices = [(i, j) for (i, j, *_rest) in opt_pairs_list]
+        matched = {idx for pair in opt_pair_indices for idx in pair}
+        opt_solo_indices = sorted(set(range(n)) - matched)
+        opt_pair_count = len(opt_pair_indices)
+        opt_pooled_pct = (200.0 * opt_pair_count / n) if n > 0 else 0.0
+        opt_ratio_lp = (opt_total / lp_total) if lp_total > 0 else float("nan")
+        opt_lp_gap = _safe_gap(lp_total, opt_total)
+
+        if print_table:
+            ratio_lp_str = f"{opt_ratio_lp:5.2f}x" if lp_total > 0 else "  n/a"
+            print(
+                f"OPT       {'opt':<12} {opt_pooled_pct:7.1f}% {opt_total:9.3f}  "
+                f"{ratio_lp_str} {opt_lp_gap:9.3f}  {1.00:5.2f}x {0.0:9.3f}  "
+                f"{opt_pair_count:>6}  {len(opt_solo_indices):>6}  {opt_time:7.3f}"
+            )
+
+        opt_row = {
+            "shadow": "opt",
+            "dispatch": "opt",
+            "n": n,
+            "d": d if np.isscalar(d) else None,
+            "seed": seed,
+            "savings": opt_total,
+            "pooled_pct": opt_pooled_pct,
+            "ratio_lp": opt_ratio_lp,
+            "lp_gap": opt_lp_gap,
+            "ratio_opt": 1.0,
+            "opt_gap": 0.0,
+            "pairs": opt_pair_count,
+            "solos": len(opt_solo_indices),
+            "time_s": opt_time,
+            "method": opt_m,
+        }
+        rows.append(opt_row)
+
+        if return_details or print_matches:
+            opt_detail = {"pairs": opt_pair_indices, "solos": opt_solo_indices}
+            details["opt"] = opt_detail
+            if print_matches:
+                print(
+                    f"    -> matches OPT/opt: pairs={opt_pair_indices}  solos={opt_solo_indices}"
+                )
+
     _write_csv(rows, save_csv)
 
     out = {
