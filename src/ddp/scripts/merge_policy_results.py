@@ -128,8 +128,17 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
             + missing.to_string(index=False)
         )
 
-    opt_total_existing = _coerce_numeric(new_rows.get("opt_total", pd.Series(index=new_rows.index)))
-    opt_total_filled = opt_total_existing.fillna(opt_from_lookup.to_numpy()).astype("Float64")
+    existing_opt_series = new_rows.get("opt_total")
+    if existing_opt_series is None:
+        opt_total_existing = pd.Series(pd.NA, index=new_rows.index, dtype="Float64")
+    else:
+        opt_total_existing = _coerce_numeric(existing_opt_series).astype("Float64")
+
+    opt_total_lookup = opt_from_lookup.reset_index(drop=True)
+    opt_total_lookup.index = new_rows.index
+    opt_total_lookup = opt_total_lookup.astype("Float64")
+
+    opt_total_filled = opt_total_existing.combine_first(opt_total_lookup).astype("Float64")
 
     savings = _coerce_numeric(new_rows.get("savings", pd.Series(index=new_rows.index))).astype("Float64")
 
