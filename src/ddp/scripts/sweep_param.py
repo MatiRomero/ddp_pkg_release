@@ -175,8 +175,11 @@ def main() -> None:
     parser.add_argument("--shadows", default="naive,pb,hd", help="Comma-separated shadow list")
     parser.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,rbatch",
-        help="Comma-separated dispatch policies",
+        default="greedy,greedy+,batch,rbatch,rbatch+",
+        help=(
+            "Comma-separated dispatch policies. Include 'rbatch+' to evaluate the RBATCH "
+            "variant that halves the shadow potentials."
+        ),
     )
     parser.add_argument("--outdir", default="results", help="Directory for CSV output")
     parser.add_argument(
