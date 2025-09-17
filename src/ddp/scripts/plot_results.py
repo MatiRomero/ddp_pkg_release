@@ -223,7 +223,8 @@ def _plot_metric_grid(
 
     ax.set_xticks(np.arange(-0.5, len(dispatches), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(shadows), 1), minor=True)
-    ax.grid(which="minor", linewidth=0.5)
+    ax.grid(which="minor", linewidth=0.5, color="white", alpha=0.6)
+    ax.grid(which="major", linewidth=0.8, color="white", alpha=0.3)
     ax.tick_params(which="minor", bottom=False, left=False)
 
     for i, shadow in enumerate(shadows):
@@ -404,9 +405,17 @@ def _plot_metric_sweep(
     else:
         ax.set_title(f"{y_label} vs {x_label}")
 
+    ax.grid(True, which="both", alpha=0.3)
+
     if drew_any:
-        ax.legend(loc="best", fontsize=9)
-    fig.tight_layout()
+        ax.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            borderaxespad=0,
+            fontsize=9,
+            frameon=False,
+        )
+    fig.tight_layout(rect=(0, 0, 0.8, 1))
 
     out_path = _compute_out_path(csv_hint, metric, out_arg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
