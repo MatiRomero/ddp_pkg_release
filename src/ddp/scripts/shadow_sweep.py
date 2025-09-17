@@ -363,9 +363,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "rbatch"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
         default="greedy",
-        help="Dispatch policy to evaluate",
+        help=(
+            "Dispatch policy to evaluate. The '+ variants' run BATCH/RBATCH with halved "
+            "shadow potentials (γ=0.5, τ=0)."
+        ),
     )
     parser.add_argument(
         "--metric",
