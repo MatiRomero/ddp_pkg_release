@@ -18,6 +18,9 @@ import pandas as pd
 # Columns that uniquely identify a trial aside from the dispatch policy itself.
 TRIAL_KEY_COLUMNS: Sequence[str] = ("param", "param_value", "n", "d", "seed", "shadow")
 
+_OPT_TOTAL_RTOL = 1e-6
+_OPT_TOTAL_ATOL = 1e-8
+
 
 def _require_columns(df: pd.DataFrame, required: Iterable[str], *, label: str) -> None:
     missing = [column for column in required if column not in df.columns]
@@ -69,21 +72,43 @@ def _build_opt_lookup(existing: pd.DataFrame) -> pd.Series:
         )
 
     enriched = existing.assign(_opt_total=opt_total)
-    grouped = enriched.groupby(list(TRIAL_KEY_COLUMNS), dropna=False)["_opt_total"].nunique()
-    conflicts = grouped[grouped > 1]
-    if not conflicts.empty:
+
+    representatives = []
+    conflicts = []
+    grouped = enriched.groupby(list(TRIAL_KEY_COLUMNS), dropna=False)["_opt_total"]
+    for key, values in grouped:
+        non_null = values.dropna()
+        if non_null.empty:
+            continue
+
+        numeric = non_null.astype("float64")
+        reference = numeric.iloc[0]
+        close_mask = np.isclose(
+            numeric.to_numpy(),
+            reference,
+            rtol=_OPT_TOTAL_RTOL,
+            atol=_OPT_TOTAL_ATOL,
+        )
+        if not close_mask.all():
+            conflicts.append(key)
+            continue
+
+        representative = float(numeric.mean())
+        representatives.append((*key, representative))
+
+    if conflicts:
+        conflict_df = pd.DataFrame(conflicts, columns=list(TRIAL_KEY_COLUMNS))
         raise ValueError(
-            "Existing CSV has conflicting opt_total values for some trial keys. "
-            "Resolve the duplicates before merging."
+            "Existing CSV has conflicting opt_total values for some trial keys "
+            "beyond the allowed tolerance. Resolve the duplicates before merging.\n"
+            + conflict_df.to_string(index=False)
         )
 
-    lookup = (
-        enriched.dropna(subset=["_opt_total"])
-        .drop_duplicates(subset=list(TRIAL_KEY_COLUMNS))
-        .set_index(list(TRIAL_KEY_COLUMNS))["_opt_total"]
-    )
-    if lookup.empty:
+    if not representatives:
         raise ValueError("Unable to build OPT lookup from the existing CSV.")
+
+    lookup_df = pd.DataFrame(representatives, columns=[*TRIAL_KEY_COLUMNS, "_opt_total"])
+    lookup = lookup_df.set_index(list(TRIAL_KEY_COLUMNS))["_opt_total"].astype("Float64")
     return lookup
 
 
