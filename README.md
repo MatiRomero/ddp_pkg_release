@@ -19,6 +19,8 @@ pip install -e .[plot]
 ddp-mwe01
 ddp-mwe02
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
+# Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
+ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
 ```
 
 ## Aggregate and Plot Results
