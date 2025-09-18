@@ -92,6 +92,7 @@ def run_instance(
     print_matches=False,
     gamma: float = 1.0,
     tau: float = 0.0,
+    tie_breaker: str = "distance",
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
@@ -99,7 +100,8 @@ def run_instance(
     ``tau`` (additive) before being used by the dispatch policies. The special
     dispatch labels ``batch+`` and ``rbatch+`` apply the corresponding policy
     with a fixed scaling of ``gamma = 0.5`` and ``tau = 0.0`` regardless of the
-    values supplied here.
+    values supplied here. ``tie_breaker`` selects how greedy policies resolve
+    score ties ("distance" by default, or "random" using the provided seed).
     """
 
     jobs = list(jobs)
@@ -194,6 +196,7 @@ def run_instance(
                     weight_fn=None,
                     shadow=None,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             elif disp == "greedy+":
                 res = simulate(
@@ -206,6 +209,7 @@ def run_instance(
                     weight_fn=None,
                     shadow=None,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             elif disp == "batch":
                 res = simulate(
@@ -218,6 +222,7 @@ def run_instance(
                     weight_fn=w_fn,
                     shadow=sp,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             elif disp == "batch+":
                 score_plus, weight_plus, sp_plus = extra_dispatch_state["batch+"]
@@ -231,6 +236,7 @@ def run_instance(
                     weight_fn=weight_plus,
                     shadow=sp_plus,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             elif disp == "rbatch":
                 res = simulate(
@@ -243,6 +249,7 @@ def run_instance(
                     weight_fn=w_fn,
                     shadow=sp,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             elif disp == "rbatch+":
                 score_plus, weight_plus, sp_plus = extra_dispatch_state["rbatch+"]
@@ -256,6 +263,7 @@ def run_instance(
                     weight_fn=weight_plus,
                     shadow=sp_plus,
                     seed=seed,
+                    tie_breaker=tie_breaker,
                 )
             else:
                 if print_table:
@@ -386,13 +394,15 @@ def run_once(
     opt_method: str = "auto",
     gamma: float = 1.0,
     tau: float = 0.0,
+    tie_breaker: str = "distance",
 ) -> dict:
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
     The optional ``gamma`` and ``tau`` parameters mirror those in
     :func:`run_instance`. Selecting ``dispatch="batch+"`` or ``dispatch="rbatch+"``
     invokes the respective heuristics with fixed ``gamma = 0.5`` and
-    ``tau = 0.0`` regardless of the provided values.
+    ``tau = 0.0`` regardless of the provided values. ``tie_breaker`` mirrors
+    the option in :func:`run_instance` for resolving greedy score ties.
     """
 
     rng = np.random.default_rng(seed)
@@ -437,6 +447,7 @@ def run_once(
             weight_fn=None,
             shadow=None,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     elif dispatch == "greedy+":
         res = simulate(
@@ -449,6 +460,7 @@ def run_once(
             weight_fn=None,
             shadow=None,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     elif dispatch == "batch":
         res = simulate(
@@ -461,6 +473,7 @@ def run_once(
             weight_fn=w_fn,
             shadow=sp,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     elif dispatch == "batch+":
         sp_plus = np.array(sp_base, dtype=float, copy=True)
@@ -477,6 +490,7 @@ def run_once(
             weight_fn=w_fn_plus,
             shadow=sp_plus,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     elif dispatch == "rbatch":
         res = simulate(
@@ -489,6 +503,7 @@ def run_once(
             weight_fn=w_fn,
             shadow=sp,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     elif dispatch == "rbatch+":
         sp_plus = np.array(sp_base, dtype=float, copy=True)
@@ -505,6 +520,7 @@ def run_once(
             weight_fn=w_fn_plus,
             shadow=sp_plus,
             seed=seed,
+            tie_breaker=tie_breaker,
         )
     else:
         raise ValueError(f"Unknown dispatch: {dispatch}")
@@ -573,6 +589,16 @@ def main() -> None:
         default=0.0,
         help="Additive offset applied to the shadow potentials before dispatch.",
     )
+    p.add_argument(
+        "--tie_breaker",
+        default="distance",
+        choices=["distance", "random"],
+        help=(
+            "Tie-breaking rule for greedy candidate selection when scores are equal. "
+            "'distance' prefers the job closest to the critical job; 'random' samples "
+            "uniformly using the provided seed."
+        ),
+    )
     args = p.parse_args()
 
     if not args.jobs:
@@ -612,6 +638,7 @@ def main() -> None:
         print_matches=args.print_matches,
         gamma=args.gamma,
         tau=args.tau,
+        tie_breaker=args.tie_breaker,
     )
 
 
