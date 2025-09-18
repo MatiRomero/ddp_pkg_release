@@ -1,0 +1,135 @@
+"""Generate hindsight-dual datasets by sampling LP relaxations."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import statistics
+import time
+from pathlib import Path
+
+import numpy as np
+
+from ddp.engine.opt import compute_lp_relaxation
+from ddp.model import generate_jobs
+from ddp.scripts.run import reward_fn
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--instances",
+        type=int,
+        default=1,
+        help="Number of independently sampled instances to generate (default: 1).",
+    )
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=50,
+        help="Number of jobs per instance (default: 50).",
+    )
+    parser.add_argument(
+        "--d",
+        type=float,
+        default=3.0,
+        help="Scalar slack / deadline parameter passed to the LP relaxation (default: 3.0).",
+    )
+    parser.add_argument(
+        "--seed0",
+        type=int,
+        default=0,
+        help="Base seed; instance i uses rng seed (seed0 + i).",
+    )
+    parser.add_argument(
+        "--out_csv",
+        type=Path,
+        required=True,
+        help="Destination CSV file for the generated dataset.",
+    )
+    return parser.parse_args()
+
+
+def _write_rows(csv_path: Path, rows: list[dict[str, float | int]]) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "instance_id",
+        "job_index",
+        "seed",
+        "timestamp",
+        "origin_x",
+        "origin_y",
+        "dest_x",
+        "dest_y",
+        "d",
+        "hindsight_dual",
+    ]
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def main() -> None:
+    args = _parse_args()
+    n_instances = int(args.instances)
+    if n_instances <= 0:
+        raise ValueError("--instances must be positive")
+
+    n_jobs = int(args.n)
+    if n_jobs <= 1:
+        raise ValueError("--n must exceed one to form pairings")
+
+    deadline = float(args.d)
+
+    rows: list[dict[str, float | int]] = []
+    solve_times: list[float] = []
+
+    for instance_id in range(n_instances):
+        seed = int(args.seed0) + instance_id
+        rng = np.random.default_rng(seed)
+        jobs = generate_jobs(n_jobs, rng)
+
+        start = time.perf_counter()
+        lp_result = compute_lp_relaxation(jobs, reward_fn, time_window=deadline)
+        elapsed = time.perf_counter() - start
+        solve_times.append(elapsed)
+
+        duals = list(map(float, lp_result["duals"]))
+        if len(duals) != n_jobs:
+            msg = "LP returned a dual vector with unexpected length"
+            raise RuntimeError(msg)
+
+        for job_index, (job, dual) in enumerate(zip(jobs, duals)):
+            rows.append(
+                {
+                    "instance_id": instance_id,
+                    "job_index": job_index,
+                    "seed": seed,
+                    "timestamp": float(job.timestamp),
+                    "origin_x": float(job.origin[0]),
+                    "origin_y": float(job.origin[1]),
+                    "dest_x": float(job.dest[0]),
+                    "dest_y": float(job.dest[1]),
+                    "d": deadline,
+                    "hindsight_dual": dual,
+                }
+            )
+
+    _write_rows(Path(args.out_csv), rows)
+
+    total_time = sum(solve_times)
+    mean_time = statistics.fmean(solve_times) if solve_times else 0.0
+    min_time = min(solve_times) if solve_times else 0.0
+    max_time = max(solve_times) if solve_times else 0.0
+    print(
+        "Generated %d instances (n=%d) -> %s" % (n_instances, n_jobs, Path(args.out_csv))
+    )
+    print(
+        "LP solve time (s): mean=%.4f  min=%.4f  max=%.4f  total=%.4f"
+        % (mean_time, min_time, max_time, total_time)
+    )
+
+
+if __name__ == "__main__":
+    main()
