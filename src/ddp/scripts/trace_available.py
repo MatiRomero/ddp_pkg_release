@@ -43,7 +43,7 @@ def _load_jobs(path: str) -> list[Job]:
     return jobs
 
 
-def _shadow_vector(label: str, jobs: Sequence[Job]) -> np.ndarray:
+def _shadow_vector(label: str, jobs: Sequence[Job], time_window) -> np.ndarray:
     jobs_list = list(jobs)
     n = len(jobs_list)
     if label == "naive":
@@ -52,7 +52,7 @@ def _shadow_vector(label: str, jobs: Sequence[Job]) -> np.ndarray:
         lengths = np.array([job.length for job in jobs_list], dtype=float)
         return potential_vec(lengths)
     if label == "hd":
-        lp = compute_lp_relaxation(jobs_list, reward_fn)
+        lp = compute_lp_relaxation(jobs_list, reward_fn, time_window=time_window)
         return np.array(lp["duals"], dtype=float)
     raise SystemExit(f"Unsupported shadow '{label}'.")
 
@@ -136,13 +136,13 @@ def main(argv: list[str] | None = None) -> None:
     if not jobs:
         raise SystemExit("Instance contains no jobs.")
 
-    base_shadow = _shadow_vector(args.shadow, jobs)
+    time_window = float(args.d)
+
+    base_shadow = _shadow_vector(args.shadow, jobs, time_window)
 
     decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = (
         _prepare_dispatch(args.policy, base_shadow, args.gamma, args.tau)
     )
-
-    time_window = float(args.d)
 
     event_log: list[tuple[float, str, int]] = []
 
