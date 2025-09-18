@@ -117,7 +117,7 @@ def run_instance(
 
     # LP (upper bound + duals for HD) — compute once
     t0 = time.perf_counter()
-    lp = compute_lp_relaxation(jobs, reward_fn)
+    lp = compute_lp_relaxation(jobs, reward_fn, time_window=d)
     lp_time = time.perf_counter() - t0
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
@@ -401,7 +401,7 @@ def run_once(
     jobs = generate_jobs(n, rng)
     lengths = np.array([job.length for job in jobs], dtype=float)
 
-    lp = compute_lp_relaxation(jobs, reward_fn)
+    lp = compute_lp_relaxation(jobs, reward_fn, time_window=d)
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
 

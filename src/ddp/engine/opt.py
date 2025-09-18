@@ -42,8 +42,12 @@ def _build_positive_edges(jobs: Sequence[Job], weight_fn, time_window=None):
     return edges
 
 # ---------------------------- LP (upper bound) + duals ----------------------------
-def compute_lp_relaxation(jobs: Sequence[Job], reward_fn):
-    """Fractional matching LP (upper bound) + duals (hindsight shadow prices)."""
+def compute_lp_relaxation(jobs: Sequence[Job], reward_fn, time_window=None):
+    """Fractional matching LP (upper bound) + duals (hindsight shadow prices).
+
+    ``time_window`` mirrors :func:`compute_opt` and restricts feasible edges to
+    those whose availability windows overlap.
+    """
     try:
         import pulp
     except Exception as e:
@@ -55,7 +59,7 @@ def compute_lp_relaxation(jobs: Sequence[Job], reward_fn):
     def w_ij(i, j, th):
         return reward_fn(i, j, th)
 
-    edges = _build_positive_edges(jobs, w_ij)
+    edges = _build_positive_edges(jobs, w_ij, time_window=time_window)
     prob = pulp.LpProblem("fractional_matching", pulp.LpMaximize)
     x = {(i, j): pulp.LpVariable(f"x_{i}_{j}", 0.0, 1.0, cat="Continuous") for (i, j, _) in edges}
     prob += pulp.lpSum(w * x[(i, j)] for (i, j, w) in edges)
