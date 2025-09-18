@@ -10,14 +10,17 @@ Install in editable mode, then use the CLI entry points.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-# Optional plotting dependencies for ``ddp-mwe01 --plot`` and other figures
+# Optional plotting dependencies for ``ddp-mwe01 --plot`` / ``ddp-mwe02 --plot`` and other figures
 pip install -e .[plot]
 ```
 
 ## Run
 ```bash
 ddp-mwe01
+ddp-mwe02
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
+# Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
+ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
 ```
 
 ## Aggregate and Plot Results

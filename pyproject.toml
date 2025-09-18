@@ -26,6 +26,7 @@ Repository = "https://github.com/<you>/<repo>"
 
 [project.scripts]
 ddp-mwe01 = "ddp.scripts.mwe_01:main"
+ddp-mwe02 = "ddp.scripts.mwe_02:main"
 ddp-many = "ddp.scripts.run_many:main"
 ddp-run   = "ddp.scripts.run:main"
 ddp-sweep = "ddp.scripts.sweep_param:main"
@@ -33,6 +34,7 @@ ddp-plot  = "ddp.scripts.plot_results:main"
 ddp-plot-sweep = "ddp.scripts.plot_sweep:main"
 ddp-bench-opt = "ddp.scripts.bench_opt_methods:main"
 ddp-shadow-sweep = "ddp.scripts.shadow_sweep:main"
+ddp-trace-available = "ddp.scripts.trace_available:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

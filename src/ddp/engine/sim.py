@@ -17,6 +17,7 @@ def simulate(
     weight_fn=None,                # base weight for matching: reward - s_i - s_j
     shadow=None,                   # vector s_i (needed for critical adjustment)
     seed=0,
+    event_hook=None,               # optional callback(time, available, due_now, phase)
 ):
     jobs = list(jobs)
     n = len(jobs)
@@ -57,6 +58,10 @@ def simulate(
 
         # due now
         due_now = [i for i in available if due_time[i] <= t]
+        if event_hook is not None:
+            available_snapshot = tuple(sorted(available))
+            due_snapshot = tuple(sorted(due_now))
+            event_hook(float(t), available_snapshot, due_snapshot, "before")
         if not due_now:
             continue
 
@@ -80,6 +85,10 @@ def simulate(
             for i in sorted(v for v in available if v not in matched):
                 solos.append(i)
             available.clear()
+            if event_hook is not None:
+                available_snapshot = tuple(sorted(available))
+                due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
+                event_hook(float(t), available_snapshot, due_snapshot, "after")
             continue
 
         # RBATCH: per critical i; only dispatch i (and partner)
@@ -112,6 +121,10 @@ def simulate(
                 else:
                     solos.append(i)
                     available.discard(i)
+            if event_hook is not None:
+                available_snapshot = tuple(sorted(available))
+                due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
+                event_hook(float(t), available_snapshot, due_snapshot, "after")
             continue
 
         # SCORE-based greedy paths
@@ -138,6 +151,11 @@ def simulate(
             else:
                 solos.append(i)
                 available.discard(i)
+
+        if event_hook is not None:
+            available_snapshot = tuple(sorted(available))
+            due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
+            event_hook(float(t), available_snapshot, due_snapshot, "after")
 
     # leftovers solo
     for i in sorted(list(available)):
