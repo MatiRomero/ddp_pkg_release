@@ -26,6 +26,7 @@ Repository = "https://github.com/<you>/<repo>"
 
 [project.scripts]
 ddp-mwe01 = "ddp.scripts.mwe_01:main"
+ddp-mwe02 = "ddp.scripts.mwe_02:main"
 ddp-many = "ddp.scripts.run_many:main"
 ddp-run   = "ddp.scripts.run:main"
 ddp-sweep = "ddp.scripts.sweep_param:main"
