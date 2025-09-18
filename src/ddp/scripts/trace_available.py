@@ -73,13 +73,15 @@ def _prepare_dispatch(
 
     sp = np.array(base_shadow, dtype=float, copy=True)
     if policy in {"batch+", "rbatch+"}:
-        gamma_eff = gamma_plus if gamma_plus is not None else 0.0
+        gamma_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_eff = tau_plus if tau_plus is not None else 0.0
         sp = sp * gamma_eff + tau_eff
         weight_fn = make_weight_fn_latest_shadow(reward_fn, sp)
+        sim_shadow: np.ndarray | None = None
     else:
         sp = sp * gamma + tau
         weight_fn = make_weight_fn(reward_fn, sp)
+        sim_shadow = sp
 
     score_fn = make_local_score(reward_fn, sp)
 
@@ -88,13 +90,13 @@ def _prepare_dispatch(
     if policy == "greedy+":
         return "threshold", "score", score_fn, None, None
     if policy == "batch":
-        return "policy", "batch", score_fn, weight_fn, sp
+        return "policy", "batch", score_fn, weight_fn, sim_shadow
     if policy == "batch+":
-        return "policy", "batch", score_fn, weight_fn, sp
+        return "policy", "batch", score_fn, weight_fn, sim_shadow
     if policy == "rbatch":
-        return "policy", "rbatch", score_fn, weight_fn, sp
+        return "policy", "rbatch", score_fn, weight_fn, sim_shadow
     if policy == "rbatch+":
-        return "policy", "rbatch", score_fn, weight_fn, sp
+        return "policy", "rbatch", score_fn, weight_fn, sim_shadow
     raise SystemExit(f"Unsupported policy '{policy}'.")
 
 
@@ -112,7 +114,8 @@ def main(argv: list[str] | None = None) -> None:
         choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
         help=(
             "Dispatch policy to trace. The '+ variants use late-arrival shadow "
-            "weighting that subtracts only the later job's shadow value."
+            "weighting with reward(i, j) - s_late (subtracting only the later "
+            "job's shadow value)."
         ),
     )
     parser.add_argument(
@@ -139,10 +142,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--plus_gamma",
         type=float,
-        default=None,
+        default=1.0,
         help=(
             "Scale factor for the late-arrival ('+' variants) shadow potentials. "
-            "Defaults to 0 when omitted."
+            "Defaults to 1 so the weight is reward(i, j) - s_late unless overridden."
         ),
     )
     parser.add_argument(

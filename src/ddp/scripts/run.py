@@ -16,7 +16,7 @@ from ddp.model import Job, generate_jobs, reward as pooling_reward
 DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
     Callable[[int, int, Sequence[Job]], float],
-    np.ndarray,
+    np.ndarray | None,
 ]
 
 
@@ -105,7 +105,7 @@ def run_instance(
     print_matches=False,
     gamma: float = 0.5,
     tau: float = 0.0,
-    gamma_plus: float | None = None,
+    gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
 ):
@@ -115,11 +115,12 @@ def run_instance(
     ``tau`` (additive) before being used by the dispatch policies. ``gamma``
     defaults to 0.5 so the standard BATCH/RBATCH heuristics subtract both job
     shadows with the same scaling used in prior releases. The ``+`` variants use
-    the :func:`make_weight_fn_latest_shadow` helper, which only subtracts the
-    later job's shadow ("late-arrival" adjustment). Their scaling can be
-    controlled with ``gamma_plus``/``tau_plus`` (defaulting to 0). ``tie_breaker``
-    selects how greedy policies resolve score ties ("distance" by default, or
-    "random" using the provided seed).
+    the :func:`make_weight_fn_latest_shadow` helper, which subtracts only the
+    later job's shadow ("late-arrival" adjustment). Their scaling defaults to
+    ``gamma_plus = 1`` with optional ``tau_plus`` shifts, and the effective
+    weight is strictly ``reward(i, j) - s_late``. ``tie_breaker`` selects how
+    greedy policies resolve score ties ("distance" by default, or "random"
+    using the provided seed).
     """
 
     jobs = list(jobs)
@@ -189,7 +190,7 @@ def run_instance(
         extra_dispatch_state: dict[str, DispatchState] = {}
         plus_variants = {"batch+", "rbatch+"}
         if any(label in dispatches for label in plus_variants):
-            gamma_plus_eff = gamma_plus if gamma_plus is not None else 0.0
+            gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
             tau_plus_eff = tau_plus if tau_plus is not None else 0.0
             sp_plus = np.array(sp_base, dtype=float, copy=True)
             sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
@@ -200,7 +201,7 @@ def run_instance(
                     extra_dispatch_state[label] = (
                         score_plus,
                         weight_plus,
-                        sp_plus,
+                        None,
                     )
 
         for disp in dispatches:
@@ -245,7 +246,7 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "batch+":
-                score_plus, weight_plus, sp_plus = extra_dispatch_state["batch+"]
+                score_plus, weight_plus, shadow_plus = extra_dispatch_state["batch+"]
                 res = simulate(
                     jobs,
                     score_plus,
@@ -254,7 +255,7 @@ def run_instance(
                     time_window=d,
                     policy="batch",
                     weight_fn=weight_plus,
-                    shadow=sp_plus,
+                    shadow=shadow_plus,
                     seed=seed,
                     tie_breaker=tie_breaker,
                 )
@@ -272,7 +273,7 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "rbatch+":
-                score_plus, weight_plus, sp_plus = extra_dispatch_state["rbatch+"]
+                score_plus, weight_plus, shadow_plus = extra_dispatch_state["rbatch+"]
                 res = simulate(
                     jobs,
                     score_plus,
@@ -281,7 +282,7 @@ def run_instance(
                     time_window=d,
                     policy="rbatch",
                     weight_fn=weight_plus,
-                    shadow=sp_plus,
+                    shadow=shadow_plus,
                     seed=seed,
                     tie_breaker=tie_breaker,
                 )
@@ -414,7 +415,7 @@ def run_once(
     opt_method: str = "auto",
     gamma: float = 0.5,
     tau: float = 0.0,
-    gamma_plus: float | None = None,
+    gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
 ) -> dict:
@@ -423,9 +424,10 @@ def run_once(
     The optional ``gamma``/``tau`` parameters mirror those in :func:`run_instance`
     with the same defaults (0.5 and 0). For ``dispatch="batch+"`` or
     ``dispatch="rbatch+"`` the weight computation subtracts only the later job's
-    shadow; ``gamma_plus``/``tau_plus`` control the scaling for those variants
-    (defaulting to zero unless explicitly provided). ``tie_breaker`` mirrors the
-    option in :func:`run_instance` for resolving greedy score ties.
+    shadow, producing ``reward(i, j) - s_late``. ``gamma_plus`` defaults to 1 (and
+    can be overridden) while ``tau_plus`` still shifts the late-arrival shadows.
+    ``tie_breaker`` mirrors the option in :func:`run_instance` for resolving greedy
+    score ties.
     """
 
     rng = np.random.default_rng(seed)
@@ -499,7 +501,7 @@ def run_once(
             tie_breaker=tie_breaker,
         )
     elif dispatch == "batch+":
-        gamma_plus_eff = gamma_plus if gamma_plus is not None else 0.0
+        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
@@ -513,7 +515,7 @@ def run_once(
             time_window=d,
             policy="batch",
             weight_fn=w_fn_plus,
-            shadow=sp_plus,
+            shadow=None,
             seed=seed,
             tie_breaker=tie_breaker,
         )
@@ -531,7 +533,7 @@ def run_once(
             tie_breaker=tie_breaker,
         )
     elif dispatch == "rbatch+":
-        gamma_plus_eff = gamma_plus if gamma_plus is not None else 0.0
+        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
@@ -545,7 +547,7 @@ def run_once(
             time_window=d,
             policy="rbatch",
             weight_fn=w_fn_plus,
-            shadow=sp_plus,
+            shadow=None,
             seed=seed,
             tie_breaker=tie_breaker,
         )
@@ -592,8 +594,8 @@ def main() -> None:
         default="greedy,greedy+,batch,batch+,rbatch,rbatch+",
         help=(
             "Comma-separated dispatch policies. "
-            "The '+ variants apply late-arrival shadow weighting (subtracting only "
-            "the later job's shadow)."
+            "The '+ variants apply late-arrival shadow weighting with weights "
+            "reward(i, j) - s_late (subtracting only the later job's shadow)."
         ),
     )
     p.add_argument(
@@ -623,10 +625,10 @@ def main() -> None:
     p.add_argument(
         "--plus_gamma",
         type=float,
-        default=None,
+        default=1.0,
         help=(
             "Scale factor for the late-arrival ('+' variants) shadow potentials. "
-            "Defaults to 0 when omitted."
+            "Defaults to 1 so the weight is reward(i, j) - s_late unless overridden."
         ),
     )
     p.add_argument(
