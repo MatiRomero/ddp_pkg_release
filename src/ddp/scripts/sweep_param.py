@@ -178,7 +178,7 @@ def main() -> None:
         default="greedy,greedy+,batch,batch+,rbatch,rbatch+",
         help=(
             "Comma-separated dispatch policies. Include 'batch+'/'rbatch+' to evaluate "
-            "the fixed 0.5-scaling variants."
+            "the late-arrival shadow variants."
         ),
     )
     parser.add_argument("--outdir", default="results", help="Directory for CSV output")
