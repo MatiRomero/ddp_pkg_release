@@ -54,7 +54,7 @@ This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated w
 
 ## Parameter Sweep Examples
 
-Use the unified sweep runner to stream per-trial CSV rows while exploring different geometry and time window settings. Each command below writes its results to `sweeps/` (created automatically) and computes the optimal baseline alongside the heuristics.
+Use the unified sweep runner to stream per-trial CSV rows while exploring different geometry and time window settings. Each command below writes its results to `sweeps/` (created automatically) and computes the optimal baseline alongside the heuristics. When `--with_opt` is supplied the offline OPT baseline receives the same deadline parameter `d` (scalar or per-job array) and discards pairs whose availability windows do not overlap.
 
 ### 1. 1-D sweep with fixed origins and flattened x-axis
 
