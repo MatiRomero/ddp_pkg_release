@@ -38,7 +38,9 @@ The default dispatch set covers `greedy`, `greedy+`, `batch`, `batch+`, `rbatch`
 `rbatch+`. The baseline BATCH/RBATCH heuristics now default to scaling shadows by
 γ = 0.5 (still overridable via `--gamma`/`--tau`). The `+` variants apply a
 "late-arrival" adjustment: when pairing jobs they subtract only the later job's
-shadow value, using separate `--plus_gamma`/`--plus_tau` controls (default 0).
+shadow value, using separate `--plus_gamma`/`--plus_tau` controls (defaults
+`--plus_gamma = 1`, `--plus_tau = 0`). The resulting weight is strictly
+`reward(i, j) - s_late` and the simulation no longer re-adds the critical shadow.
 
 This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean and std columns for every metric.
 
