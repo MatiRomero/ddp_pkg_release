@@ -130,6 +130,15 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Plot the size of the available set over the event timeline.",
     )
+    parser.add_argument(
+        "--tie_breaker",
+        default="distance",
+        choices=["distance", "random"],
+        help=(
+            "Tie-breaking rule used by greedy dispatch when multiple partners share the "
+            "same score."
+        ),
+    )
     args = parser.parse_args(argv)
 
     jobs = _load_jobs(args.jobs)
@@ -169,6 +178,7 @@ def main(argv: list[str] | None = None) -> None:
         weight_fn=weight_fn,
         shadow=sim_shadow,
         seed=0,
+        tie_breaker=args.tie_breaker,
         event_hook=hook,
     )
 

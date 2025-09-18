@@ -3,7 +3,7 @@ from typing import Sequence
 import numpy as np
 
 from ddp.engine.opt import max_weight_matching_subset
-from ddp.model import Job
+from ddp.model import Job, distance
 
 
 def simulate(
@@ -17,10 +17,17 @@ def simulate(
     weight_fn=None,                # base weight for matching: reward - s_i - s_j
     shadow=None,                   # vector s_i (needed for critical adjustment)
     seed=0,
+    tie_breaker: str = "distance",
     event_hook=None,               # optional callback(time, available, due_now, phase)
 ):
     jobs = list(jobs)
     n = len(jobs)
+
+    valid_tie_breakers = {"distance", "random"}
+    if tie_breaker not in valid_tie_breakers:
+        raise ValueError(
+            f"Unsupported tie_breaker '{tie_breaker}'. Choose from {sorted(valid_tie_breakers)}."
+        )
 
     # time inputs
     if timestamps is None:
@@ -48,6 +55,7 @@ def simulate(
     total_savings = 0.0
     pairs = []  # (i, j, score_or_weight, reward)
     solos = []
+    rng = np.random.default_rng(seed)
 
     for t in event_times:
         # arrivals
@@ -133,8 +141,27 @@ def simulate(
                 continue
             candidates = [j for j in available if j != i]
             if candidates:
-                j = max(candidates, key=lambda j_: score_fn(i, j_, jobs))
-                score = float(score_fn(i, j, jobs))
+                score_map = {cand: float(score_fn(i, cand, jobs)) for cand in candidates}
+                best_score = max(score_map.values())
+                best_candidates = [
+                    cand for cand, val in score_map.items() if np.isclose(val, best_score)
+                ]
+                if len(best_candidates) == 1:
+                    j = best_candidates[0]
+                elif tie_breaker == "random":
+                    j = int(rng.choice(best_candidates))
+                else:  # tie_breaker == "distance"
+                    job_i = jobs[i]
+
+                    def _distance_metric(cand: int) -> tuple[float, int]:
+                        job_j = jobs[cand]
+                        dist = distance(job_i.origin, job_j.origin) + distance(
+                            job_i.dest, job_j.dest
+                        )
+                        return dist, cand
+
+                    j = min(best_candidates, key=_distance_metric)
+                score = score_map[j]
                 reward = float(reward_fn(i, j, jobs))
             else:
                 j, score, reward = None, -1.0, 0.0
