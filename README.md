@@ -35,8 +35,10 @@ python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --save
 ```
 
 The default dispatch set covers `greedy`, `greedy+`, `batch`, `batch+`, `rbatch`, and
-`rbatch+`. The `+` variants reuse the base BATCH/RBATCH heuristics but force the shadow
-potentials to be scaled by 0.5 (γ = 0.5, τ = 0).
+`rbatch+`. The baseline BATCH/RBATCH heuristics now default to scaling shadows by
+γ = 0.5 (still overridable via `--gamma`/`--tau`). The `+` variants apply a
+"late-arrival" adjustment: when pairing jobs they subtract only the later job's
+shadow value, using separate `--plus_gamma`/`--plus_tau` controls (default 0).
 
 This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean and std columns for every metric.
 
@@ -50,7 +52,9 @@ This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated w
 
 - Reward (toy): `min(theta[i], theta[j])`
 - Time model: `timestamps` + `time_window` (scalar or per-job)
-- Batch(+)/rbatch(+) use critical-aware weights so for critical `i`: weight(i,j) = reward(i,j) - s_j
+- Batch/rbatch subtract both job shadows when scoring candidate pairs.
+- Batch+/rbatch+ use late-arrival weights so for jobs `(i, j)` the later arrival's
+  shadow is subtracted: `weight(i, j) = reward(i, j) - s_late`.
 
 ## Parameter Sweep Examples
 

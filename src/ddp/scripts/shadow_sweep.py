@@ -366,8 +366,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
         default="greedy",
         help=(
-            "Dispatch policy to evaluate. '+ variants enforce fixed scaling (γ=0.5, τ=0) "
-            "before applying BATCH/RBATCH."
+            "Dispatch policy to evaluate. '+ variants apply late-arrival shadow "
+            "weighting that subtracts only the later job's shadow."
         ),
     )
     parser.add_argument(

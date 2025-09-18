@@ -11,12 +11,12 @@ from ddp.algorithms.potential import potential as potential_vec
 from ddp.engine.opt import compute_lp_relaxation
 from ddp.engine.sim import simulate
 from ddp.model import Job
-from ddp.scripts import run as run_mod
-from ddp.scripts.run import make_local_score, make_weight_fn, reward_fn
-
-
-PLUS_DISPATCH_GAMMA = run_mod.PLUS_DISPATCH_GAMMA
-PLUS_DISPATCH_TAU = run_mod.PLUS_DISPATCH_TAU
+from ddp.scripts.run import (
+    make_local_score,
+    make_weight_fn,
+    make_weight_fn_latest_shadow,
+    reward_fn,
+)
 
 
 def _load_jobs(path: str) -> list[Job]:
@@ -62,6 +62,8 @@ def _prepare_dispatch(
     base_shadow: np.ndarray,
     gamma: float,
     tau: float,
+    gamma_plus: float | None,
+    tau_plus: float | None,
 ) -> tuple[str, str, callable, callable | None, np.ndarray | None]:
     """Return dispatch configuration for :func:`simulate`.
 
@@ -71,12 +73,15 @@ def _prepare_dispatch(
 
     sp = np.array(base_shadow, dtype=float, copy=True)
     if policy in {"batch+", "rbatch+"}:
-        sp = sp * PLUS_DISPATCH_GAMMA + PLUS_DISPATCH_TAU
+        gamma_eff = gamma_plus if gamma_plus is not None else 0.0
+        tau_eff = tau_plus if tau_plus is not None else 0.0
+        sp = sp * gamma_eff + tau_eff
+        weight_fn = make_weight_fn_latest_shadow(reward_fn, sp)
     else:
         sp = sp * gamma + tau
+        weight_fn = make_weight_fn(reward_fn, sp)
 
     score_fn = make_local_score(reward_fn, sp)
-    weight_fn = make_weight_fn(reward_fn, sp)
 
     if policy == "greedy":
         return "naive", "score", score_fn, None, None
@@ -105,7 +110,10 @@ def main(argv: list[str] | None = None) -> None:
         "--policy",
         required=True,
         choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
-        help="Dispatch policy to trace.",
+        help=(
+            "Dispatch policy to trace. The '+ variants use late-arrival shadow "
+            "weighting that subtracts only the later job's shadow value."
+        ),
     )
     parser.add_argument(
         "--shadow",
@@ -116,14 +124,35 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=1.0,
-        help="Scale factor applied to the shadow potentials (ignored by + variants).",
+        default=0.5,
+        help=(
+            "Scale factor applied to the shadow potentials before dispatch. "
+            "Defaults to 0.5 for compatibility with the batch/rbatch heuristics."
+        ),
     )
     parser.add_argument(
         "--tau",
         type=float,
         default=0.0,
-        help="Additive offset applied to the shadow potentials (ignored by + variants).",
+        help="Additive offset applied to the base shadow potentials before dispatch.",
+    )
+    parser.add_argument(
+        "--plus_gamma",
+        type=float,
+        default=None,
+        help=(
+            "Scale factor for the late-arrival ('+' variants) shadow potentials. "
+            "Defaults to 0 when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--plus_tau",
+        type=float,
+        default=None,
+        help=(
+            "Additive offset for the late-arrival ('+' variants) shadow potentials. "
+            "Defaults to 0 when omitted."
+        ),
     )
     parser.add_argument(
         "--plot",
@@ -149,8 +178,13 @@ def main(argv: list[str] | None = None) -> None:
 
     base_shadow = _shadow_vector(args.shadow, jobs, time_window)
 
-    decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = (
-        _prepare_dispatch(args.policy, base_shadow, args.gamma, args.tau)
+    decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = _prepare_dispatch(
+        args.policy,
+        base_shadow,
+        args.gamma,
+        args.tau,
+        args.plus_gamma,
+        args.plus_tau,
     )
 
     event_log: list[tuple[float, str, int]] = []
