@@ -4,7 +4,9 @@
 This script generates random job instances under several geometric layouts and
 times the available backends used by :func:`ddp.engine.opt.compute_opt`.  It is
 intended to provide a quick comparison between the ``auto``, ``networkx`` and
-``ilp`` methods when ``--with_opt`` is enabled in the experiment runners.
+``ilp`` methods when ``--with_opt`` is enabled in the experiment runners.  The
+benchmark accepts a deadline parameter ``d`` matching the experiment scripts and
+filters edges accordingly when running OPT.
 
 Usage (as a module)::
 
@@ -115,6 +117,7 @@ def _benchmark_scenario(
     seed0: int,
     scenario: Scenario,
     methods: Sequence[MethodName],
+    deadline,
 ) -> tuple[dict[MethodName, list[float]], dict[MethodName, str | None], dict[MethodName, Counter], list[dict]]:
     timings: dict[MethodName, list[float]] = {method: [] for method in methods}
     errors: dict[MethodName, str | None] = {method: None for method in methods}
@@ -138,7 +141,7 @@ def _benchmark_scenario(
 
             start = time.perf_counter()
             try:
-                result = compute_opt(jobs, _reward_fn, method=method)
+                result = compute_opt(jobs, _reward_fn, method=method, time_window=deadline)
             except Exception as exc:  # pragma: no cover - depends on optional deps
                 errors[method] = str(exc)
                 continue
@@ -256,6 +259,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--n", type=int, default=200, help="Number of jobs per trial")
     parser.add_argument("--trials", type=int, default=3, help="Trials per scenario")
     parser.add_argument(
+        "--deadline",
+        type=float,
+        default=1.0,
+        help=(
+            "Deadline parameter 'd' supplied to compute_opt; matches the "
+            "time-window used in the experiment runners."
+        ),
+    )
+    parser.add_argument(
         "--seed0",
         type=int,
         default=0,
@@ -291,7 +303,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     print(
         "Benchmarking compute_opt backends for"  # pragma: no cover - CLI output only
-        f" n={args.n} over {args.trials} trial(s)"
+        f" n={args.n} over {args.trials} trial(s) with d={args.deadline}"
     )
 
     for scenario in scenarios:
@@ -301,6 +313,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             seed0=args.seed0,
             scenario=scenario,
             methods=methods,
+            deadline=args.deadline,
         )
         _summarize_results(
             scenario=scenario,

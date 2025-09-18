@@ -127,7 +127,7 @@ def run_instance(
     opt_time = 0.0
     if with_opt:
         t0 = time.perf_counter()
-        opt = compute_opt(jobs, reward_fn, method=opt_method)
+        opt = compute_opt(jobs, reward_fn, method=opt_method, time_window=d)
         opt_time = time.perf_counter() - t0
         opt_total = float(opt["total_reward"])
         opt_pairs = opt["pairs"]
@@ -407,7 +407,7 @@ def run_once(
 
     opt_total = None
     if with_opt:
-        opt = compute_opt(jobs, reward_fn, method=opt_method)
+        opt = compute_opt(jobs, reward_fn, method=opt_method, time_window=d)
         opt_total = float(opt["total_reward"])
 
     if shadow == "naive":
@@ -552,7 +552,11 @@ def main() -> None:
             "The '+ variants enforce BATCH/RBATCH with shadow potentials scaled by 0.5."
         ),
     )
-    p.add_argument("--with_opt", action="store_true")
+    p.add_argument(
+        "--with_opt",
+        action="store_true",
+        help="Compute the OPT baseline with the same deadline parameter 'd'",
+    )
     p.add_argument("--opt_method", default="auto", choices=["auto", "networkx", "ilp"])
     p.add_argument("--save_csv", default="")
     p.add_argument("--print_matches", action="store_true")

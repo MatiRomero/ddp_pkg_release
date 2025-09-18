@@ -1,14 +1,41 @@
 from typing import List, Sequence, Tuple
 
+import numpy as np
+
 from ddp.model import Job
 
 # ---------------------------- helpers ----------------------------
-def _build_positive_edges(jobs: Sequence[Job], weight_fn):
-    """Build (i,j,w) for i<j with w = weight_fn(i,j,jobs) and w>0."""
+def _normalize_deadlines(n: int, time_window) -> np.ndarray | None:
+    """Normalize deadline specification to an array aligned with ``jobs``."""
+
+    if time_window is None:
+        return None
+
+    if np.isscalar(time_window):
+        return np.full(n, float(time_window), dtype=float)
+
+    deadlines = np.asarray(time_window, dtype=float)
+    if deadlines.shape != (n,):
+        raise ValueError("time_window array must have length equal to len(jobs)")
+    return deadlines
+
+
+def _build_positive_edges(jobs: Sequence[Job], weight_fn, time_window=None):
+    """Build feasible edges ``(i, j, w)`` with positive weight."""
     n = len(jobs)
     edges: List[Tuple[int, int, float]] = []
+    deadlines = _normalize_deadlines(n, time_window)
+    if deadlines is not None:
+        timestamps = np.array([float(job.timestamp) for job in jobs], dtype=float)
     for i in range(n):
         for j in range(i + 1, n):
+            if deadlines is not None:
+                t_i = timestamps[i]
+                t_j = timestamps[j]
+                latest_start = max(t_i, t_j)
+                earliest_deadline = min(t_i + deadlines[i], t_j + deadlines[j])
+                if latest_start > earliest_deadline:
+                    continue
             w = float(weight_fn(i, j, jobs))
             if w > 0:
                 edges.append((i, j, w))
@@ -57,14 +84,22 @@ def compute_lp_relaxation(jobs: Sequence[Job], reward_fn):
     return {"total_upper": total_upper, "frac_edges": frac, "duals": duals, "method": "ilp"}
 
 # ---------------------------- Offline OPT (integral) ----------------------------
-def compute_opt(jobs: Sequence[Job], reward_fn, method: str = "auto"):
-    """Offline OPT as integral max-weight matching on reward graph."""
+def compute_opt(jobs: Sequence[Job], reward_fn, method: str = "auto", time_window=None):
+    """Offline OPT as integral max-weight matching on the reward graph.
+
+    ``time_window`` may be ``None`` (all jobs mutually compatible), a scalar
+    deadline applied to every job, or an array-like of per-job deadlines.  In
+    the scalar case an edge ``(i, j)`` is retained only when ``|t_i - t_j|`` is
+    at most the deadline.  For array inputs an edge is feasible when the
+    availability intervals ``[t_i, t_i + d_i]`` and ``[t_j, t_j + d_j]``
+    overlap.
+    """
     jobs = list(jobs)
 
     def w_ij(i, j, th):
         return reward_fn(i, j, th)
 
-    edges = _build_positive_edges(jobs, w_ij)
+    edges = _build_positive_edges(jobs, w_ij, time_window=time_window)
     n = len(jobs)
 
     if method in ("auto", "networkx"):

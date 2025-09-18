@@ -190,7 +190,11 @@ def main() -> None:
             "rows are streamed as trials finish"
         ),
     )
-    parser.add_argument("--with_opt", action="store_true", help="Compute OPT baseline as well")
+    parser.add_argument(
+        "--with_opt",
+        action="store_true",
+        help="Compute the OPT baseline respecting the deadline parameter 'd'",
+    )
     parser.add_argument(
         "--opt_method",
         default="auto",
