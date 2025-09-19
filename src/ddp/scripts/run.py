@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import time
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 
@@ -16,7 +16,7 @@ from ddp.model import Job, generate_jobs, reward as pooling_reward
 DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
     Callable[[int, int, Sequence[Job]], float],
-    np.ndarray | None,
+    Optional[np.ndarray],
 ]
 
 
