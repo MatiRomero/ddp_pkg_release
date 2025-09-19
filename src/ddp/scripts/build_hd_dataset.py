@@ -62,6 +62,7 @@ def _write_rows(csv_path: Path, rows: list[dict[str, float | int]]) -> None:
         "dest_x",
         "dest_y",
         "d",
+        "potential",
         "hindsight_dual",
     ]
     with csv_path.open("w", newline="") as handle:
@@ -112,6 +113,7 @@ def main() -> None:
                     "dest_x": float(job.dest[0]),
                     "dest_y": float(job.dest[1]),
                     "d": deadline,
+                    "potential": 0.5 * float(job.length),
                     "hindsight_dual": dual,
                 }
             )
