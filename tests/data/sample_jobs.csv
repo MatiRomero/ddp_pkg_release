@@ -1,0 +1,4 @@
+platform_order_time,sender_lat,sender_lng,recipient_lat,recipient_lng
+2023-01-01T00:00:00Z,0.0,0.0,1.0,1.0
+2023-01-01T00:05:00Z,0.1,0.1,1.1,1.1
+2023-01-01T00:02:30Z,0.2,0.2,1.2,1.2
