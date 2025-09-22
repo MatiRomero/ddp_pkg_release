@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import importlib
+import os
 import time
-from typing import Callable, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -18,6 +20,125 @@ DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
     Optional[np.ndarray],
 ]
+
+
+class AverageDualError(RuntimeError):
+    """Raised when average-dual shadows cannot be constructed."""
+
+
+def load_average_duals(path: str) -> dict[str, float]:
+    """Load an average-dual lookup table from ``path``.
+
+    The loader accepts either ``.npz`` archives containing parallel ``types`` and
+    ``mean_dual`` (or ``duals``) arrays or delimited text/CSV files with at least
+    ``type`` and ``mean_dual`` columns. Types are coerced to ``str`` and duplicate
+    entries overwrite previous values. ``ValueError`` is raised when expected
+    columns are absent.
+    """
+
+    ext = os.path.splitext(path)[1].lower()
+    table: dict[str, float] = {}
+
+    if ext == ".npz":
+        with np.load(path, allow_pickle=False) as data:
+            if "types" not in data:
+                raise ValueError("Average-dual archive must contain a 'types' array")
+            if "mean_dual" in data:
+                means = data["mean_dual"]
+            elif "duals" in data:
+                means = data["duals"]
+            else:
+                raise ValueError("Average-dual archive must contain 'mean_dual' or 'duals'")
+            types = data["types"]
+            if len(types) != len(means):
+                raise ValueError("Mismatch between 'types' and dual arrays in archive")
+            for key, value in zip(types, means):
+                table[str(key)] = float(value)
+        return table
+
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError("Average-dual CSV must include a header row")
+        lowered = {name.lower(): name for name in reader.fieldnames}
+        if "type" not in lowered:
+            raise ValueError("Average-dual CSV missing 'type' column")
+        if "mean_dual" not in lowered and "dual" not in lowered:
+            raise ValueError("Average-dual CSV missing 'mean_dual' (or 'dual') column")
+        type_key = lowered["type"]
+        dual_key = lowered.get("mean_dual", lowered.get("dual"))
+        assert dual_key is not None  # for mypy
+        for row in reader:
+            if not row:
+                continue
+            type_name = row[type_key].strip()
+            if not type_name:
+                continue
+            try:
+                value = float(row[dual_key])
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                raise ValueError(f"Invalid dual value for type '{type_name}'") from exc
+            table[type_name] = value
+    return table
+
+
+def load_average_dual_mapper(spec: str) -> Callable[[Job], str | None]:
+    """Resolve ``module:function`` import paths to average-dual mappers."""
+
+    if ":" not in spec:
+        raise ValueError("Mapping spec must be 'module:function'")
+    module_name, func_name = spec.rsplit(":", 1)
+    if not module_name or not func_name:
+        raise ValueError("Mapping spec must include both module and function name")
+    module = importlib.import_module(module_name)
+    try:
+        func = getattr(module, func_name)
+    except AttributeError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Module '{module_name}' lacks attribute '{func_name}'") from exc
+    if not callable(func):
+        raise TypeError(f"Resolved object '{module_name}:{func_name}' is not callable")
+    return func
+
+
+def _resolve_average_duals(
+    jobs: Sequence[Job],
+    duals: np.ndarray,
+    table: Mapping[str, float],
+    mapper: Callable[[Job], str | None],
+    *,
+    missing: str,
+) -> tuple[np.ndarray, list[tuple[int, str | None]]]:
+    """Return average-dual shadows and report missing job types."""
+
+    sp = np.zeros(len(jobs), dtype=float)
+    missing_records: list[tuple[int, str | None]] = []
+    for idx, job in enumerate(jobs):
+        key = mapper(job)
+        if key is None:
+            missing_records.append((idx, None))
+            continue
+        value = table.get(str(key))
+        if value is None:
+            missing_records.append((idx, str(key)))
+            continue
+        sp[idx] = float(value)
+
+    if missing_records:
+        if missing == "hd":
+            for idx, _label in missing_records:
+                sp[idx] = float(duals[idx])
+        elif missing == "zero":
+            for idx, _label in missing_records:
+                sp[idx] = 0.0
+        elif missing == "error":
+            raise AverageDualError(
+                "Missing average-dual entries for job types: "
+                + ", ".join(sorted({str(label) for (_idx, label) in missing_records}))
+            )
+        else:
+            raise AverageDualError(f"Unknown missing-type policy '{missing}'")
+
+    return sp, missing_records
 
 
 def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
@@ -108,11 +229,14 @@ def run_instance(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
+    ad_duals: Mapping[str, float] | None = None,
+    ad_mapping: Callable[[Job], str | None] | None = None,
+    ad_missing: str = "hd",
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
-    Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative) and
-    ``tau`` (additive) before being used by the dispatch policies. ``gamma``
+    Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative)
+    and ``tau`` (additive) before being used by the dispatch policies. ``gamma``
     defaults to 0.5 so the standard BATCH/RBATCH heuristics subtract both job
     shadows with the same scaling used in prior releases. The ``+`` variants use
     the :func:`make_weight_fn_latest_shadow` helper, which subtracts only the
@@ -121,6 +245,13 @@ def run_instance(
     weight is strictly ``reward(i, j) - s_late``. ``tie_breaker`` selects how
     greedy policies resolve score ties ("distance" by default, or "random"
     using the provided seed).
+
+    When ``"ad"`` is present in ``shadows`` the optional ``ad_duals`` table and
+    ``ad_mapping`` callable describe the average-dual family. Every job is mapped
+    to a type key and the mean dual for that type is retrieved from the table.
+    Missing types fall back to HD duals when ``ad_missing="hd"`` (the default),
+    are zeroed with ``ad_missing="zero"``, or raise an :class:`AverageDualError`
+    when ``ad_missing="error"``.
     """
 
     jobs = list(jobs)
@@ -176,6 +307,35 @@ def run_instance(
             sp_base = potential_vec(lengths)
         elif sh == "hd":
             sp_base = duals
+        elif sh == "ad":
+            if ad_duals is None or ad_mapping is None:
+                raise AverageDualError(
+                    "Average-dual shadows require both 'ad_duals' and 'ad_mapping'."
+                )
+            sp_base, missing_records = _resolve_average_duals(
+                jobs,
+                duals,
+                ad_duals,
+                ad_mapping,
+                missing=ad_missing,
+            )
+            if missing_records and print_table:
+                missing_labels = sorted(
+                    {
+                        "<none>" if label in (None, "None") else str(label)
+                        for (_idx, label) in missing_records
+                    }
+                )
+                print(
+                    "[ad] Missing types encountered (" + ", ".join(missing_labels) + ")",
+                    end="",
+                )
+                if ad_missing == "hd":
+                    print(" -> used HD dual fallback")
+                elif ad_missing == "zero":
+                    print(" -> substituted zero")
+                else:
+                    print()
         else:
             if print_table:
                 print(f"[skip] Unknown shadow: {sh}")
@@ -418,6 +578,9 @@ def run_once(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
+    ad_duals: Mapping[str, float] | None = None,
+    ad_mapping: Callable[[Job], str | None] | None = None,
+    ad_missing: str = "hd",
 ) -> dict:
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
@@ -451,6 +614,16 @@ def run_once(
         sp_base = potential_vec(lengths)
     elif shadow == "hd":
         sp_base = duals
+    elif shadow == "ad":
+        if ad_duals is None or ad_mapping is None:
+            raise AverageDualError("Average-dual shadows require ad_duals/ad_mapping")
+        sp_base, _missing = _resolve_average_duals(
+            jobs,
+            duals,
+            ad_duals,
+            ad_mapping,
+            missing=ad_missing,
+        )
     else:
         raise ValueError(f"Unknown shadow: {shadow}")
 
@@ -650,6 +823,27 @@ def main() -> None:
             "uniformly using the provided seed."
         ),
     )
+    p.add_argument(
+        "--ad_duals",
+        help=(
+            "Path to an average-dual table (.npz or CSV). Required when --shadows includes 'ad'."
+        ),
+    )
+    p.add_argument(
+        "--ad_mapping",
+        help=(
+            "Module:function resolving to a callable that maps Job -> type for AD shadows."
+        ),
+    )
+    p.add_argument(
+        "--ad_missing",
+        default="hd",
+        choices=["hd", "zero", "error"],
+        help=(
+            "Policy for jobs whose mapped type is absent in the average-dual table: "
+            "'hd' falls back to per-job HD duals, 'zero' uses 0, and 'error' aborts."
+        ),
+    )
     args = p.parse_args()
 
     if not args.jobs:
@@ -675,11 +869,22 @@ def main() -> None:
         for origin, dest, ts in zip(origins, dests, timestamps)
     ]
 
+    shadow_list = [s.strip().lower() for s in args.shadows.split(",") if s.strip()]
+    dispatch_list = [d.strip() for d in args.dispatch.split(",") if d.strip()]
+
+    ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
+    ad_mapper = load_average_dual_mapper(args.ad_mapping) if args.ad_mapping else None
+    if "ad" in shadow_list:
+        if ad_table is None or ad_mapper is None:
+            raise SystemExit(
+                "--shadows contains 'ad' so both --ad_duals and --ad_mapping are required"
+            )
+
     run_instance(
         jobs=jobs,
         d=args.d,
-        shadows=[s.strip() for s in args.shadows.split(",") if s.strip()],
-        dispatches=[d.strip() for d in args.dispatch.split(",") if d.strip()],
+        shadows=shadow_list,
+        dispatches=dispatch_list,
         seed=args.seed,
         with_opt=args.with_opt,
         opt_method=args.opt_method,
@@ -692,6 +897,9 @@ def main() -> None:
         gamma_plus=args.plus_gamma,
         tau_plus=args.plus_tau,
         tie_breaker=args.tie_breaker,
+        ad_duals=ad_table,
+        ad_mapping=ad_mapper,
+        ad_missing=args.ad_missing,
     )
 
 

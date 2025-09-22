@@ -21,7 +21,22 @@ ddp-mwe02
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
 # Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
 ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
+# Evaluate average-dual (AD) shadows using a pre-computed table and type mapper
+python -m ddp.scripts.run \
+  --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
+  --ad-duals ad_means.npz --ad-mapping my_project.mappers:job_type --ad-missing hd
 ```
+
+Average-dual (``ad``) shadows map each job to a discrete type (via
+``module:function`` provided to ``--ad-mapping``) and pull a mean dual value from
+the lookup passed to ``--ad-duals``. Tables may be ``.npz`` archives containing
+parallel ``types`` and ``mean_dual`` arrays or CSV files with ``type`` and
+``mean_dual`` columns. When a job's mapped type is absent, specify the fallback
+behaviour with ``--ad-missing``: ``hd`` (default) replaces that job's shadow with
+the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts.
+The same options are available for ``ddp-trace-available`` and
+``python -m ddp.scripts.sweep_param`` so interactive tracing and sweep runs can
+share the same assets.
 
 ## Aggregate and Plot Results
 
