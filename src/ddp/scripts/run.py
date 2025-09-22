@@ -14,6 +14,7 @@ from ddp.algorithms.potential import potential as potential_vec
 from ddp.engine.opt import compute_lp_relaxation, compute_opt
 from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward
+from ddp.scripts.csv_loader import load_jobs_from_csv
 
 DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
@@ -758,7 +759,29 @@ def main() -> None:
     import argparse
 
     p = argparse.ArgumentParser(description="Run SHADOW×DISPATCH on a given job instance.")
-    p.add_argument("--jobs", type=str, help="Path to .npz containing 'origins', 'dests', 'timestamps'.")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--jobs",
+        type=str,
+        help="Path to .npz containing 'origins', 'dests', 'timestamps'.",
+    )
+    group.add_argument(
+        "--jobs-csv",
+        type=str,
+        help=(
+            "Path to a CSV file that can be parsed by ddp.scripts.csv_loader.load_jobs_from_csv."
+        ),
+    )
+    p.add_argument(
+        "--timestamp-column",
+        default="platform_order_time",
+        help="CSV column containing ISO timestamps (used with --jobs-csv).",
+    )
+    p.add_argument(
+        "--export-npz",
+        default=None,
+        help="Optional path to write the loaded jobs as an .npz archive.",
+    )
     p.add_argument("--d", type=float, required=True)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--shadows", default="naive,pb,hd")
@@ -846,19 +869,32 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    if not args.jobs:
-        raise SystemExit("Provide --jobs .npz")
+    origins: np.ndarray
+    dests: np.ndarray
+    timestamps: np.ndarray
 
-    with np.load(args.jobs) as data:
-        try:
-            origins = data["origins"]
-            dests = data["dests"]
-            timestamps = data["timestamps"]
-        except KeyError as exc:
-            raise SystemExit("--jobs file must contain 'origins', 'dests', and 'timestamps'") from exc
+    if args.jobs:
+        with np.load(args.jobs) as data:
+            try:
+                origins = np.array(data["origins"], dtype=float)
+                dests = np.array(data["dests"], dtype=float)
+                timestamps = np.array(data["timestamps"], dtype=float)
+            except KeyError as exc:
+                msg = "--jobs file must contain 'origins', 'dests', and 'timestamps'"
+                raise SystemExit(msg) from exc
+    elif args.jobs_csv:
+        jobs = load_jobs_from_csv(
+            args.jobs_csv,
+            timestamp_column=args.timestamp_column,
+        )
+        origins = np.array([job.origin for job in jobs], dtype=float)
+        dests = np.array([job.dest for job in jobs], dtype=float)
+        timestamps = np.array([job.timestamp for job in jobs], dtype=float)
+    else:  # pragma: no cover - argparse enforces exclusivity, but defensive
+        raise SystemExit("Provide either --jobs or --jobs-csv")
 
     if not (len(origins) == len(dests) == len(timestamps)):
-        raise SystemExit("Mismatched job array lengths in --jobs")
+        raise SystemExit("Mismatched job array lengths in provided job data")
 
     jobs = [
         Job(
@@ -868,6 +904,17 @@ def main() -> None:
         )
         for origin, dest, ts in zip(origins, dests, timestamps)
     ]
+
+    if args.export_npz:
+        export_origins = np.array([job.origin for job in jobs], dtype=float)
+        export_dests = np.array([job.dest for job in jobs], dtype=float)
+        export_timestamps = np.array([job.timestamp for job in jobs], dtype=float)
+        np.savez(
+            args.export_npz,
+            origins=export_origins,
+            dests=export_dests,
+            timestamps=export_timestamps,
+        )
 
     shadow_list = [s.strip().lower() for s in args.shadows.split(",") if s.strip()]
     dispatch_list = [d.strip() for d in args.dispatch.split(",") if d.strip()]
