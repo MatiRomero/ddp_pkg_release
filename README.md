@@ -19,6 +19,9 @@ pip install -e .[plot]
 ddp-mwe01
 ddp-mwe02
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
+# Load jobs straight from a Meituan-style CSV (see notes below)
+python -m ddp.scripts.run --jobs-csv data/meituan_sample.csv --d 3 \
+  --export-npz meituan_sample.npz --save_csv run_from_csv.csv
 # Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
 ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
 # Evaluate average-dual (AD) shadows using a pre-computed table and type mapper
@@ -39,6 +42,39 @@ the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts
 The same options are available for ``ddp-trace-available`` and
 ``python -m ddp.scripts.sweep_param`` so interactive tracing and sweep runs can
 share the same assets.
+
+### Loading job instances from CSV files
+
+`python -m ddp.scripts.run` now accepts ``--jobs-csv`` to ingest the Meituan
+sample CSV (or any file that matches its schema). By default the loader expects
+ISO 8601 timestamps in the ``platform_order_time`` column; override
+``--timestamp-column`` if your file stores these values under a different name.
+Timestamps are normalised by subtracting the earliest valid record so the first
+job starts at time 0 s, with every subsequent job expressed in elapsed seconds.
+Rows with missing coordinates or malformed timestamps are skipped silently so
+cleaning can happen upstream.
+
+Use ``--export-npz`` to persist the parsed jobs as an ``origins``/``dests``/
+``timestamps`` archive alongside your aggregated CSV. The resulting ``.npz``
+files remain compatible with all existing tracing and plotting tools (e.g.
+``ddp-trace-available`` and ``ddp.scripts.plot_results``), so you can mix CSV-
+backed and legacy workflows without changes.
+
+Example end-to-end run on the bundled Meituan sample:
+
+```bash
+python -m ddp.scripts.run \
+  --jobs-csv data/meituan_sample.csv \
+  --timestamp-column platform_order_time \
+  --d 3 \
+  --export-npz data/meituan_sample.npz \
+  --save_csv data/meituan_sample_summary.csv
+```
+
+The loader interprets timestamps with explicit offsets (e.g. ``+08:00``) and
+converts trailing ``Z`` markers to ``+00:00`` automatically; ensure any local
+timezones are encoded directly in the CSV if you need precise alignment with
+external datasets.
 
 ## Aggregate and Plot Results
 
