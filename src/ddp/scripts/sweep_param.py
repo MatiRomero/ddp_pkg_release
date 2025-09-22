@@ -235,7 +235,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--ad_missing",
-        default="hd",
+        default="error",
         choices=["hd", "zero", "error"],
         help="Policy for handling jobs whose type is missing from the average-dual table.",
     )
