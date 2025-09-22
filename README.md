@@ -25,6 +25,8 @@ ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
   --ad-duals ad_means.npz --ad-mapping my_project.mappers:job_type --ad-missing hd
+# Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
+python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
 ```
 
 Average-dual (``ad``) shadows map each job to a discrete type (via
