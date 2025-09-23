@@ -18,3 +18,4 @@ results*.csv
 results/
 figs/
 sweeps/
+data/
