@@ -15,6 +15,8 @@ from dataclasses import dataclass
 import math
 from typing import Iterator, Sequence
 
+from ddp.model import Job
+
 GridIndex = tuple[int, int]
 TypeKey = tuple[GridIndex, GridIndex]
 
@@ -27,6 +29,7 @@ __all__ = [
     "fine_mapping",
     "coarse_mapping",
     "make_mapping",
+    "job_mapping",
 ]
 
 
@@ -112,3 +115,10 @@ def make_mapping(type_width: float) -> UniformGridMapping:
     """Return a ``UniformGridMapping`` configured for ``type_width``."""
 
     return UniformGridMapping(type_width=type_width)
+
+def job_mapping(job: Job, mapper: UniformGridMapping = mapping) -> TypeKey:
+    """Return the grid type for ``job`` using ``mapper`` (default: ``mapping``)."""
+
+    origin_x, origin_y = job.origin
+    dest_x, dest_y = job.dest
+    return mapper(origin_x, origin_y, dest_x, dest_y)
