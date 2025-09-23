@@ -41,7 +41,8 @@ behaviour with ``--ad-missing``: ``hd`` (default) replaces that job's shadow wit
 the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts.
 The same options are available for ``ddp-trace-available`` and
 ``python -m ddp.scripts.sweep_param`` so interactive tracing and sweep runs can
-share the same assets.
+share the same assets. See [Average-dual pipeline overview](docs/average_dual_pipeline.md)
+for a detailed walkthrough of the HD sampling, type mapping, and runtime integration pipeline.
 
 ### Loading job instances from CSV files
 
