@@ -12,6 +12,7 @@ coverage.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
 import math
 from typing import Iterator, Sequence
 
@@ -33,7 +34,11 @@ __all__ = [
 ]
 
 
-@dataclass(slots=True)
+# ``slots`` support for dataclasses was introduced in Python 3.10.
+_DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+
+@dataclass(**_DATACLASS_KWARGS)
 class UniformGridMapping:
     """Quantise origin/destination points onto a uniform spatial grid."""
 
