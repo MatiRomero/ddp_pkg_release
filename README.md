@@ -30,6 +30,9 @@ python -m ddp.scripts.run \
   --ad-duals ad_means.npz --ad-mapping my_project.mappers:job_type --ad-missing hd
 # Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
+# Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
+python -m ddp.scripts.build_average_duals data/hd_samples.csv \
+  ddp.mappings.uniform_grid:mapping data/ad_uniform_grid.csv
 ```
 
 Average-dual (``ad``) shadows map each job to a discrete type (via
