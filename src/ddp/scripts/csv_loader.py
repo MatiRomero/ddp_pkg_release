@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TextIO
@@ -20,7 +21,12 @@ _REQUIRED_COORD_COLUMNS = (
 )
 
 
-@dataclass(slots=True)
+_DATACLASS_KWARGS: dict[str, object] = {}
+if sys.version_info >= (3, 10):
+    _DATACLASS_KWARGS["slots"] = True
+
+
+@dataclass(**_DATACLASS_KWARGS)
 class _RowRecord:
     """Internal representation of a CSV row prior to conversion into a job."""
 
