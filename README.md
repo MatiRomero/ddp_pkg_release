@@ -52,11 +52,14 @@ for a detailed walkthrough of the HD sampling, type mapping, and runtime integra
 `python -m ddp.scripts.run` now accepts ``--jobs-csv`` to ingest the Meituan
 sample CSV (or any file that matches its schema). By default the loader expects
 ISO 8601 timestamps in the ``platform_order_time`` column; override
-``--timestamp-column`` if your file stores these values under a different name.
-Timestamps are normalised by subtracting the earliest valid record so the first
-job starts at time 0 s, with every subsequent job expressed in elapsed seconds.
-Rows with missing coordinates or malformed timestamps are skipped silently so
-cleaning can happen upstream.
+``--timestamp-column`` if your file stores these values under a different name
+(for example switch to ``order_push_time`` when you want the order release
+moment). Timestamps are normalised by subtracting the earliest valid record so
+the first order always sits at ``t = 0`` s and every subsequent job is measured
+in elapsed seconds. Because the simulator works in seconds, ensure any
+deadlines ``d`` supplied via the CLI use the same unit. Rows with missing
+coordinates or malformed timestamps are skipped silently so cleaning can happen
+upstream.
 
 Use ``--export-npz`` to persist the parsed jobs as an ``origins``/``dests``/
 ``timestamps`` archive alongside your aggregated CSV. The resulting ``.npz``
@@ -73,6 +76,18 @@ python -m ddp.scripts.run \
   --d 3 \
   --export-npz data/meituan_sample.npz \
   --save_csv data/meituan_sample_summary.csv
+```
+
+To sanity-check a custom CSV, point the loader at the file and specify the key
+flags explicitly so you can confirm the normalised timestamps match your
+expectations:
+
+```bash
+python -m ddp.scripts.run \
+  --jobs-csv my_orders.csv \
+  --timestamp-column order_push_time \
+  --export-npz my_orders.npz \
+  --save_csv my_orders_summary.csv
 ```
 
 The loader interprets timestamps with explicit offsets (e.g. ``+08:00``) and
