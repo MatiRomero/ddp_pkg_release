@@ -29,7 +29,7 @@ ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb
 # Evaluate average-dual (AD) shadows using a pre-computed table and type mapper
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
-  --ad-duals ad_means.npz --ad-mapping my_project.mappers:job_type --ad-missing hd
+  --ad_duals ad_means.npz --ad_mapping my_project.mappers:job_type --ad_missing hd
 # Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
 # Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
@@ -38,11 +38,11 @@ python -m ddp.scripts.build_average_duals data/hd_samples.csv \
 ```
 
 Average-dual (``ad``) shadows map each job to a discrete type (via
-``module:function`` provided to ``--ad-mapping``) and pull a mean dual value from
-the lookup passed to ``--ad-duals``. Tables may be ``.npz`` archives containing
+``module:function`` provided to ``--ad_mapping``) and pull a mean dual value from
+the lookup passed to ``--ad_duals``. Tables may be ``.npz`` archives containing
 parallel ``types`` and ``mean_dual`` arrays or CSV files with ``type`` and
 ``mean_dual`` columns. When a job's mapped type is absent, specify the fallback
-behaviour with ``--ad-missing``: ``hd`` (default) replaces that job's shadow with
+behaviour with ``--ad_missing``: ``hd`` (default) replaces that job's shadow with
 the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts.
 The same options are available for ``ddp-trace-available`` and
 ``python -m ddp.scripts.sweep_param`` so interactive tracing and sweep runs can
