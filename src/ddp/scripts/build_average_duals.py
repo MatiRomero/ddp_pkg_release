@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Hashable, Iterable
 
@@ -15,16 +16,39 @@ from ddp.scripts.average_duals import _load_mapping, MappingCallable
 class _Stats:
     total: float = 0.0
     count: int = 0
+    _m2: float = 0.0
 
     def add(self, value: float) -> None:
-        self.total += value
-        self.count += 1
+        previous_count = self.count
+        previous_total = self.total
+
+        self.count = previous_count + 1
+        self.total = previous_total + value
+
+        if previous_count == 0:
+            self._m2 = 0.0
+            return
+
+        previous_mean = previous_total / previous_count
+        new_mean = self.total / self.count
+        delta = value - previous_mean
+        delta2 = value - new_mean
+        self._m2 += delta * delta2
 
     @property
     def mean(self) -> float:
         if self.count == 0:
             raise ZeroDivisionError("Cannot compute mean with zero count")
         return self.total / self.count
+
+    @property
+    def std_dev(self) -> float:
+        if self.count == 0:
+            raise ZeroDivisionError("Cannot compute standard deviation with zero count")
+        if self.count == 1:
+            return 0.0
+        variance = self._m2 / self.count
+        return math.sqrt(variance)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -87,7 +111,7 @@ def compute_average_duals(csv_path: Path, mapping: MappingCallable) -> dict[Hash
 
 def write_average_duals(csv_path: Path, stats: dict[Hashable, _Stats]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["type", "mean_dual", "count"]
+    fieldnames = ["type", "mean_dual", "std_dev", "count"]
     with csv_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -97,6 +121,7 @@ def write_average_duals(csv_path: Path, stats: dict[Hashable, _Stats]) -> None:
                 {
                     "type": str(key),
                     "mean_dual": f"{bucket.mean:.12g}",
+                    "std_dev": f"{bucket.std_dev:.12g}",
                     "count": bucket.count,
                 }
             )
