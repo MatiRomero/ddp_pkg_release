@@ -380,8 +380,32 @@ def _plot_metric_sweep(
             continue
 
         if std_col:
-            yerr = pd.to_numeric(policy_df.get(std_col), errors="coerce").to_numpy()[order]
-            yerr = yerr[mask]
+            std_values = (
+                pd.to_numeric(policy_df.get(std_col), errors="coerce")
+                .to_numpy()
+            )
+            std_values = std_values[order]
+
+            if "trial_count" in policy_df.columns:
+                counts = (
+                    pd.to_numeric(policy_df.get("trial_count"), errors="coerce")
+                    .to_numpy()
+                )
+                counts = counts[order]
+            else:
+                counts = np.full(std_values.shape, np.nan, dtype=float)
+
+            std_values = std_values[mask]
+            counts = counts[mask]
+
+            if counts.size:
+                counts = counts.astype(float, copy=False)
+                sem = np.full_like(std_values, np.nan, dtype=float)
+                valid = (counts > 0) & np.isfinite(std_values)
+                sem[valid] = std_values[valid] / np.sqrt(counts[valid])
+                yerr = 2.0 * sem
+            else:
+                yerr = np.full_like(std_values, np.nan, dtype=float)
         else:
             yerr = None
 
