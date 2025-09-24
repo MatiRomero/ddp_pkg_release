@@ -55,7 +55,7 @@ class BuildAverageDualsTest(unittest.TestCase):
 
             with out_path.open(newline="") as handle:
                 reader = csv.DictReader(handle)
-                self.assertEqual(reader.fieldnames, ["type", "mean_dual", "count"])
+                self.assertEqual(reader.fieldnames, ["type", "mean_dual", "std_dev", "count"])
                 output_rows = list(reader)
 
             self.assertEqual(len(output_rows), 2)
@@ -68,6 +68,8 @@ class BuildAverageDualsTest(unittest.TestCase):
             self.assertEqual(rows_by_type[type_b]["count"], "1")
             self.assertAlmostEqual(float(rows_by_type[type_a]["mean_dual"]), 2.0)
             self.assertAlmostEqual(float(rows_by_type[type_b]["mean_dual"]), 2.0)
+            self.assertAlmostEqual(float(rows_by_type[type_a]["std_dev"]), 1.0)
+            self.assertAlmostEqual(float(rows_by_type[type_b]["std_dev"]), 0.0)
 
             table = load_average_duals(str(out_path))
             mapper = load_average_dual_mapper("ddp.mappings.uniform_grid:job_mapping")
