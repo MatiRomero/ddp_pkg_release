@@ -8,17 +8,25 @@ import math
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm.auto import tqdm
 
 from ddp.model import Job, generate_jobs
-from ddp.scripts.run import run_instance
+from ddp.scripts.average_duals import _load_mapping
+from ddp.scripts.build_average_duals import compute_average_duals
+from ddp.scripts.run import (
+    AverageDualError,
+    load_average_duals,
+    load_average_dual_mapper,
+    run_instance,
+)
 
 
-SHADOWS: tuple[str, ...] = ("naive", "pb", "hd")
+DEFAULT_SHADOWS: tuple[str, ...] = ("naive", "pb", "hd")
+ALL_SHADOWS: tuple[str, ...] = DEFAULT_SHADOWS + ("ad",)
 
 
 @dataclass(frozen=True)
@@ -56,23 +64,27 @@ def _identity(jobs: Sequence[Job]) -> list[Job]:
     return list(jobs)
 
 
-GEOMETRIES: tuple[GeometryPreset, ...] = (
-    GeometryPreset(
-        name="line_y0",
-        label="1D line (y=0)",
-        transform=_flatten_to_line,
-    ),
-    GeometryPreset(
-        name="common_origin",
-        label="Common origin",
-        transform=_pin_origins,
-    ),
-    GeometryPreset(
-        name="plane",
-        label="Random 2D",
-        transform=_identity,
-    ),
-)
+GEOMETRY_PRESETS: dict[str, GeometryPreset] = {
+    preset.name: preset
+    for preset in (
+        GeometryPreset(
+            name="line_y0",
+            label="1D line (y=0)",
+            transform=_flatten_to_line,
+        ),
+        GeometryPreset(
+            name="common_origin",
+            label="Common origin",
+            transform=_pin_origins,
+        ),
+        GeometryPreset(
+            name="plane",
+            label="Random 2D",
+            transform=_identity,
+        ),
+    )
+}
+DEFAULT_GEOMETRIES: tuple[str, ...] = ("plane",)
 
 
 ALLOWED_METRICS: tuple[str, ...] = (
@@ -115,7 +127,21 @@ def _parse_values(spec: str) -> list[float]:
     return values
 
 
-def _prepare_trials(n: int, trials: int, seed0: int) -> list[tuple[int, dict[str, list[Job]]]]:
+def _parse_name_list(spec: str) -> list[str]:
+    """Parse a comma-delimited list into stripped tokens."""
+
+    values = [chunk.strip() for chunk in spec.split(",") if chunk.strip()]
+    if not values:
+        raise ValueError("value specification must be non-empty")
+    return values
+
+
+def _prepare_trials(
+    n: int,
+    trials: int,
+    seed0: int,
+    geometries: Sequence[GeometryPreset],
+) -> list[tuple[int, dict[str, list[Job]]]]:
     """Generate base jobs and geometry variants for each trial seed."""
 
     prepared: list[tuple[int, dict[str, list[Job]]]] = []
@@ -123,7 +149,7 @@ def _prepare_trials(n: int, trials: int, seed0: int) -> list[tuple[int, dict[str
         seed = seed0 + offset
         rng = np.random.default_rng(seed)
         base_jobs = generate_jobs(n, rng)
-        variants = {preset.name: preset.transform(base_jobs) for preset in GEOMETRIES}
+        variants = {preset.name: preset.transform(base_jobs) for preset in geometries}
         prepared.append((seed, variants))
     return prepared
 
@@ -159,26 +185,31 @@ def _run_sweep(
     metric: str,
     gamma_values: Sequence[float],
     tau_values: Sequence[float],
+    geometries: Sequence[GeometryPreset],
+    shadows: Sequence[str],
+    ad_duals: Mapping[str, float] | None,
+    ad_mapping: Callable[[Job], str | None] | None,
+    ad_missing: str,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
 
-    trial_jobs = _prepare_trials(n, trials, seed0)
+    trial_jobs = _prepare_trials(n, trials, seed0, geometries)
 
     heatmap: dict[str, dict[str, np.ndarray]] = {
         geom.name: {
             shadow: np.full((len(tau_values), len(gamma_values)), np.nan, dtype=float)
-            for shadow in SHADOWS
+            for shadow in shadows
         }
-        for geom in GEOMETRIES
+        for geom in geometries
     }
 
     records: list[dict] = []
     best_entries: list[tuple[GeometryPreset, str, float | None, float | None, float | None]] = []
 
     total_trials = (
-        len(GEOMETRIES)
-        * len(SHADOWS)
+        len(geometries)
+        * len(shadows)
         * len(tau_values)
         * len(gamma_values)
         * len(trial_jobs)
@@ -192,8 +223,8 @@ def _run_sweep(
     )
 
     try:
-        for geom in GEOMETRIES:
-            for shadow in SHADOWS:
+        for geom in geometries:
+            for shadow in shadows:
                 best_mean: float | None = None
                 best_gamma: float | None = None
                 best_tau: float | None = None
@@ -221,6 +252,9 @@ def _run_sweep(
                                 print_matches=False,
                                 gamma=float(gamma),
                                 tau=float(tau),
+                                ad_duals=ad_duals,
+                                ad_mapping=ad_mapping,
+                                ad_missing=ad_missing,
                             )
                             row = result["rows"][0]
                             metric_value = _extract_metric(row, metric)
@@ -267,11 +301,13 @@ def _plot_heatmaps(
     gamma_values: Sequence[float],
     tau_values: Sequence[float],
     metric: str,
+    geometries: Sequence[GeometryPreset],
+    shadows: Sequence[str],
 ) -> plt.Figure:
     """Render the gamma/tau heatmaps for every geometry/shadow combination."""
 
-    rows = len(SHADOWS)
-    cols = len(GEOMETRIES)
+    rows = len(shadows)
+    cols = len(geometries)
     fig, axes = plt.subplots(
         rows,
         cols,
@@ -281,13 +317,15 @@ def _plot_heatmaps(
         constrained_layout=True,
     )
     axes = np.atleast_2d(axes)
+    if rows > 1 and cols == 1:
+        axes = axes.T
 
     gamma_labels = [_format_value(val) for val in gamma_values]
     tau_labels = [_format_value(val) for val in tau_values]
 
     mesh = None
-    for col, geom in enumerate(GEOMETRIES):
-        for row, shadow in enumerate(SHADOWS):
+    for col, geom in enumerate(geometries):
+        for row, shadow in enumerate(shadows):
             ax = axes[row, col]
             data = heatmap[geom.name][shadow]
             mesh = ax.imshow(data, origin="lower", aspect="auto")
@@ -399,6 +437,61 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional path to save aggregated metric summaries as CSV",
     )
     parser.add_argument(
+        "--geometries",
+        default=",".join(DEFAULT_GEOMETRIES),
+        help=(
+            "Comma list of geometry presets to evaluate. Choices: "
+            + ", ".join(GEOMETRY_PRESETS)
+        ),
+    )
+    parser.add_argument(
+        "--shadows",
+        default=",".join(DEFAULT_SHADOWS),
+        help="Comma list of shadow potentials to evaluate (choices: %s)"
+        % ", ".join(ALL_SHADOWS),
+    )
+    parser.add_argument(
+        "--ad-duals",
+        default="",
+        help=(
+            "Path to a precomputed average-dual table (.npz or CSV). Required when "
+            "--shadows includes 'ad' unless --ad-hd-csv is supplied."
+        ),
+    )
+    parser.add_argument(
+        "--ad-hd-csv",
+        default="",
+        help=(
+            "Hindsight-dual dataset CSV used to aggregate average-dual tables on the fly. "
+            "Requires --ad-hd-mapping and is used when --ad-duals is omitted."
+        ),
+    )
+    parser.add_argument(
+        "--ad-hd-mapping",
+        default="",
+        help=(
+            "module:callable specification for the coordinate-based mapping applied to "
+            "the hindsight-dual dataset (required with --ad-hd-csv)."
+        ),
+    )
+    parser.add_argument(
+        "--ad-mapping",
+        default="",
+        help=(
+            "module:callable specification that maps Job objects to average-dual types "
+            "(required when evaluating AD shadows)."
+        ),
+    )
+    parser.add_argument(
+        "--ad-missing",
+        choices=("hd", "zero", "error"),
+        default="hd",
+        help=(
+            "Policy for jobs whose type is absent from the average-dual table when "
+            "evaluating AD shadows"
+        ),
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Display the generated heatmaps interactively",
@@ -426,16 +519,89 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as exc:  # pragma: no cover - defensive argument parsing
         parser.error(f"invalid --tau-values: {exc}")
 
-    heatmap, records, best_entries = _run_sweep(
-        n=args.n,
-        d=float(args.d),
-        trials=args.trials,
-        seed0=args.seed0,
-        dispatch=args.dispatch,
-        metric=args.metric,
-        gamma_values=gamma_values,
-        tau_values=tau_values,
-    )
+    try:
+        geometry_names = _parse_name_list(args.geometries)
+    except ValueError as exc:
+        parser.error(f"invalid --geometries: {exc}")
+    geometries: list[GeometryPreset] = []
+    seen_geometries: set[str] = set()
+    for name in geometry_names:
+        preset = GEOMETRY_PRESETS.get(name)
+        if preset is None:
+            parser.error(f"unknown geometry '{name}' (choices: {', '.join(GEOMETRY_PRESETS)})")
+        if name in seen_geometries:
+            continue
+        geometries.append(preset)
+        seen_geometries.add(name)
+    if not geometries:
+        parser.error("at least one geometry must be selected")
+
+    try:
+        shadow_names = _parse_name_list(args.shadows)
+    except ValueError as exc:
+        parser.error(f"invalid --shadows: {exc}")
+    shadows: list[str] = []
+    seen_shadows: set[str] = set()
+    for name in shadow_names:
+        if name not in ALL_SHADOWS:
+            parser.error(f"unknown shadow '{name}' (choices: {', '.join(ALL_SHADOWS)})")
+        if name in seen_shadows:
+            continue
+        shadows.append(name)
+        seen_shadows.add(name)
+    if not shadows:
+        parser.error("at least one shadow family must be selected")
+
+    ad_duals: Mapping[str, float] | None = None
+    ad_mapping = None
+    if "ad" in shadows:
+        if not args.ad_mapping:
+            parser.error("--ad-mapping is required when evaluating AD shadows")
+        try:
+            ad_mapping = load_average_dual_mapper(args.ad_mapping)
+        except (ImportError, AttributeError, TypeError, ValueError) as exc:
+            parser.error(f"invalid --ad-mapping: {exc}")
+
+        if args.ad_duals:
+            try:
+                ad_duals = load_average_duals(args.ad_duals)
+            except (OSError, ValueError) as exc:
+                parser.error(f"failed to load --ad-duals: {exc}")
+        else:
+            if not args.ad_hd_csv:
+                parser.error("--ad-duals or --ad-hd-csv is required when using AD shadows")
+            if not args.ad_hd_mapping:
+                parser.error("--ad-hd-mapping is required when using --ad-hd-csv")
+            try:
+                hd_mapping, _expected = _load_mapping(args.ad_hd_mapping)
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                parser.error(f"invalid --ad-hd-mapping: {exc}")
+            try:
+                stats = compute_average_duals(Path(args.ad_hd_csv), hd_mapping)
+            except (OSError, ValueError) as exc:
+                parser.error(f"failed to aggregate average duals: {exc}")
+            ad_duals = {str(key): bucket.mean for key, bucket in stats.items()}
+            if not ad_duals:
+                parser.error("average-dual aggregation produced an empty table")
+
+    try:
+        heatmap, records, best_entries = _run_sweep(
+            n=args.n,
+            d=float(args.d),
+            trials=args.trials,
+            seed0=args.seed0,
+            dispatch=args.dispatch,
+            metric=args.metric,
+            gamma_values=gamma_values,
+            tau_values=tau_values,
+            geometries=geometries,
+            shadows=shadows,
+            ad_duals=ad_duals,
+            ad_mapping=ad_mapping,
+            ad_missing=args.ad_missing,
+        )
+    except AverageDualError as exc:
+        parser.error(str(exc))
 
     print("\nBest configurations per geometry/shadow:")
     for geom, shadow, best_mean, best_gamma, best_tau in best_entries:
@@ -448,7 +614,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                 f"tau={_format_value(best_tau)}",
             )
 
-    fig = _plot_heatmaps(heatmap, gamma_values, tau_values, args.metric)
+    fig = _plot_heatmaps(
+        heatmap,
+        gamma_values,
+        tau_values,
+        args.metric,
+        geometries,
+        shadows,
+    )
 
     if args.out:
         out_path = Path(args.out)
