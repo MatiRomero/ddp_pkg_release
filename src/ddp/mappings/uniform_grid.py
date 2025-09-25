@@ -108,9 +108,9 @@ class UniformGridMapping:
         return range(start, stop + 1)
 
 
-DEFAULT_WIDTH = 0.05
-FINE_WIDTH = 0.01
-COARSE_WIDTH = 0.1
+DEFAULT_WIDTH = 0.5
+FINE_WIDTH = 0.25
+COARSE_WIDTH = 1.0
 
 mapping = UniformGridMapping(type_width=DEFAULT_WIDTH)
 fine_mapping = UniformGridMapping(type_width=FINE_WIDTH)

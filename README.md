@@ -39,6 +39,17 @@ python -m ddp.scripts.build_average_duals data/hd_samples.csv \
 python -m ddp.scripts.inspect_average_duals data/hd_dataset_n100_d10.csv \
   --mapping ddp.mappings.uniform_grid:mapping \
   --heatmap reports/uniform_grid_origin_coverage.png
+# Compute H3-bucketed Meituan average duals and export tables/maps
+python -m ddp.scripts.meituan_average_duals \
+  --day 20210305 \
+  --data-dir data/meituan_snapshots \
+  --history-days 20210228,20210301,20210302,20210303,20210304 \
+  --resolution 8 \
+  --neighbor-radius 1 \
+  --missing-policy hd \
+  --export-summary reports/meituan_r8_summary.csv \
+  --export-target reports/meituan_day5_with_ad.csv \
+  --folium-map reports/meituan_day5_sender_coverage.html
 ```
 
 Average-dual (``ad``) shadows map each job to a discrete type (via
@@ -72,6 +83,36 @@ Use ``--export-npz`` to persist the parsed jobs as an ``origins``/``dests``/
 files remain compatible with all existing tracing and plotting tools (e.g.
 ``ddp-trace-available`` and ``ddp.scripts.plot_results``), so you can mix CSV-
 backed and legacy workflows without changes.
+
+### Meituan H3 average-dual pipeline
+
+The `meituan_average_duals` helper runs the full workflow for a single target
+day: it loads the corresponding CSV snapshot, computes or reuses cached HD duals
+for every job, aggregates historical days into sender/recipient H3 hexagon
+pairs, and attaches the mean duals back onto the target jobs. The command above
+illustrates a typical invocation. Key options include:
+
+- `--day`: the snapshot to process (used with `--jobs-pattern` to find the CSV).
+- `--history-days`: explicit comma-separated list of other days to average; omit
+  to use every available snapshot except the target day.
+- `--resolution`: H3 resolution used when hashing the sender/recipient
+  coordinates (default `8`).
+- `--neighbor-radius`: optional `k_ring` search when a `(sender_hex,
+  recipient_hex)` pair has no historical coverage. Set to `0` to disable (the
+  default).
+- `--missing-policy`: fallback applied when neighbours are also missing (`hd`
+  to reuse the hindsight dual, `zero`, or `nan`).
+- `--export-summary`: CSV path for the aggregated `(sender_hex,
+  recipient_hex)` averages so they can be reused later.
+- `--export-target`: CSV path for the target-day jobs with attached mean duals
+  and metadata columns.
+- `--folium-map`: optional HTML map visualising sender coverage at the chosen
+  resolution.
+
+Snapshots are discovered by combining `--data-dir` with `--jobs-pattern`
+(defaults to `meituan_city_lunchtime_plat10301330_day{day}.csv`). Per-day HD
+dual CSVs are cached under `--cache-dir` (`data/hd_cache` by default) to avoid
+re-solving the LP; pass `--force` to recompute them.
 
 Example end-to-end run on the bundled Meituan sample:
 
