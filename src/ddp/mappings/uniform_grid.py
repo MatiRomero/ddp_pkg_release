@@ -60,11 +60,11 @@ class UniformGridMapping:
             self.expected_types = self._compute_expected_types()
 
     def _snap(self, x: float, y: float, *, offsets: Sequence[float]) -> GridIndex:
-        """Return the grid cell indices nearest to ``(x, y)``."""
+        """Return the grid cell indices covering ``(x, y)``."""
 
         width = self.type_width
-        ix = int(round((x - offsets[0]) / width))
-        iy = int(round((y - offsets[1]) / width))
+        ix = math.floor((x - offsets[0]) / width)
+        iy = math.floor((y - offsets[1]) / width)
         return (ix, iy)
 
     def __call__(self, origin_x: float, origin_y: float, dest_x: float, dest_y: float) -> TypeKey:
@@ -101,16 +101,17 @@ class UniformGridMapping:
     def _index_range(self, low: float, high: float, offset: float) -> range:
         if low > high:
             low, high = high, low
-        start = math.floor(((low - offset) / self.type_width) + 0.5)
-        stop = math.floor(((high - offset) / self.type_width) + 0.5)
+        width = self.type_width
+        start = math.floor((low - offset) / width)
+        stop = math.floor((high - offset) / width)
         if stop < start:
             start, stop = stop, start
         return range(start, stop + 1)
 
 
-DEFAULT_WIDTH = 0.5
-FINE_WIDTH = 0.25
-COARSE_WIDTH = 1.0
+DEFAULT_WIDTH = 0.1
+FINE_WIDTH = 0.01
+COARSE_WIDTH = 0.2
 
 mapping = UniformGridMapping(type_width=DEFAULT_WIDTH)
 fine_mapping = UniformGridMapping(type_width=FINE_WIDTH)

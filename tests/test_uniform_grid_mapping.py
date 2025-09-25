@@ -15,10 +15,10 @@ from ddp.mappings.uniform_grid import (  # noqa: E402
 
 
 class UniformGridMappingTest(unittest.TestCase):
-    def test_snap_rounds_to_nearest_cell(self) -> None:
+    def test_snap_quantises_to_cell_lower_bounds(self) -> None:
         mapping = UniformGridMapping(type_width=DEFAULT_WIDTH)
         key = mapping(0.12, -0.21, 0.86, 0.98)
-        self.assertEqual(key, ((0, 0), (2, 2)))
+        self.assertEqual(key, ((1, -3), (8, 9)))
 
     def test_expected_types_from_bounds(self) -> None:
         mapping = UniformGridMapping(
@@ -29,14 +29,11 @@ class UniformGridMappingTest(unittest.TestCase):
         expected = mapping.expected_types
         self.assertIsNotNone(expected)
         assert expected is not None  # narrow type
+        x_indices = range(0, 6)
+        y_indices = range(-1, 5)
         self.assertEqual(
             expected,
-            {
-                ((0, 0), (0, 0)),
-                ((1, 0), (0, 0)),
-                ((0, 1), (0, 0)),
-                ((1, 1), (0, 0)),
-            },
+            {((x, y), (0, 0)) for x in x_indices for y in y_indices},
         )
 
     def test_custom_expected_types_passthrough(self) -> None:
@@ -56,7 +53,7 @@ class MappingLoaderTest(unittest.TestCase):
             "ddp.mappings.uniform_grid:mapping"
         )
         self.assertTrue(callable(mapper))
-        self.assertEqual(mapper(0.0, 0.0, 0.51, 0.51), ((0, 0), (1, 1)))
+        self.assertEqual(mapper(0.0, 0.0, 0.51, 0.51), ((0, 0), (5, 5)))
         if expected is not None:
             self.assertIn(((0, 0), (0, 0)), expected)
 
