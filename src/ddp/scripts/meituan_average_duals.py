@@ -96,6 +96,14 @@ def _jobs_to_frame(day: int, jobs: Sequence[Job], duals: Sequence[float]) -> "pd
     return _pd.DataFrame.from_records(rows)
 
 
+def _format_deadline(deadline: float) -> str:
+    """Return a stable string representation for ``deadline``."""
+
+    if float(deadline).is_integer():
+        return str(int(deadline))
+    return format(float(deadline), "g")
+
+
 def compute_day_hd_duals(
     *,
     day: int,
@@ -280,7 +288,8 @@ def ensure_hd_cache(
 ) -> pd.DataFrame:
     _pd = _require_pandas()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"day{day}_hd.csv"
+    deadline_tag = _format_deadline(deadline)
+    cache_path = cache_dir / f"day{day}_d{deadline_tag}_hd.csv"
     if cache_path.exists() and not force:
         return _pd.read_csv(cache_path)
 

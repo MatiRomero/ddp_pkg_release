@@ -111,8 +111,9 @@ illustrates a typical invocation. Key options include:
 
 Snapshots are discovered by combining `--data-dir` with `--jobs-pattern`
 (defaults to `meituan_city_lunchtime_plat10301330_day{day}.csv`). Per-day HD
-dual CSVs are cached under `--cache-dir` (`data/hd_cache` by default) to avoid
-re-solving the LP; pass `--force` to recompute them.
+dual CSVs are cached under `--cache-dir` (`data/hd_cache` by default) using
+filenames of the form `day{day}_d{deadline}_hd.csv` so multiple LP deadlines can
+coexist; pass `--force` to recompute them.
 
 Example end-to-end run on the bundled Meituan sample:
 
