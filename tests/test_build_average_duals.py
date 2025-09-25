@@ -21,24 +21,24 @@ class BuildAverageDualsTest(unittest.TestCase):
             hd_path = tmp_path / "hd.csv"
             rows = [
                 {
-                    "origin_x": "0.10",
-                    "origin_y": "0.20",
-                    "dest_x": "0.45",
-                    "dest_y": "0.45",
+                    "origin_x": "0.12",
+                    "origin_y": "0.14",
+                    "dest_x": "0.47",
+                    "dest_y": "0.52",
                     "hindsight_dual": "1.0",
                 },
                 {
-                    "origin_x": "0.22",
-                    "origin_y": "0.08",
-                    "dest_x": "0.46",
-                    "dest_y": "0.44",
+                    "origin_x": "0.18",
+                    "origin_y": "0.19",
+                    "dest_x": "0.48",
+                    "dest_y": "0.51",
                     "hindsight_dual": "3.0",
                 },
                 {
-                    "origin_x": "1.10",
-                    "origin_y": "-0.90",
-                    "dest_x": "-0.40",
-                    "dest_y": "0.40",
+                    "origin_x": "1.05",
+                    "origin_y": "-0.95",
+                    "dest_x": "-0.45",
+                    "dest_y": "0.38",
                     "hindsight_dual": "2.0",
                 },
             ]
@@ -60,8 +60,8 @@ class BuildAverageDualsTest(unittest.TestCase):
 
             self.assertEqual(len(output_rows), 2)
             rows_by_type = {row["type"]: row for row in output_rows}
-            type_a = "((0, 0), (1, 1))"
-            type_b = "((2, -2), (-1, 1))"
+            type_a = "((1, 1), (4, 5))"
+            type_b = "((10, -10), (-5, 3))"
             self.assertIn(type_a, rows_by_type)
             self.assertIn(type_b, rows_by_type)
             self.assertEqual(rows_by_type[type_a]["count"], "2")
