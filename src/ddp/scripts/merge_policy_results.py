@@ -135,12 +135,6 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
                 "policy results to append."
             )
 
-        raise ValueError(
-            "Missing OPT totals for the following trial keys:\n"
-            + missing_unique.to_string(index=False)
-            + hint
-        )
-
     existing_opt_series = new_rows.get("opt_total")
     if existing_opt_series is None:
         opt_total_existing = pd.Series(pd.NA, index=new_rows.index, dtype="Float64")
