@@ -15,8 +15,9 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-# Columns that uniquely identify a trial aside from the dispatch policy itself.
-TRIAL_KEY_COLUMNS: Sequence[str] = ("param", "param_value", "n", "d", "seed", "shadow")
+# Columns that uniquely identify a trial independent of the evaluated policy.
+TRIAL_KEY_COLUMNS: Sequence[str] = ("param", "param_value", "trial_index", "seed", "n", "d")
+_NUMERIC_TRIAL_KEY_COLUMNS = {"param_value", "trial_index", "seed", "n", "d"}
 
 _OPT_TOTAL_RTOL = 1e-6
 _OPT_TOTAL_ATOL = 1e-8
@@ -26,6 +27,22 @@ def _require_columns(df: pd.DataFrame, required: Iterable[str], *, label: str) -
     missing = [column for column in required if column not in df.columns]
     if missing:
         raise ValueError(f"{label} is missing required columns: {', '.join(missing)}")
+
+
+def _normalized_trial_keys(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of the trial key columns coerced to canonical dtypes."""
+
+    keys = df.loc[:, TRIAL_KEY_COLUMNS].copy()
+    for column in TRIAL_KEY_COLUMNS:
+        if column not in keys.columns:
+            continue
+
+        if column in _NUMERIC_TRIAL_KEY_COLUMNS:
+            keys[column] = pd.to_numeric(keys[column], errors="coerce").astype("Float64")
+        else:
+            keys[column] = keys[column].astype("string")
+
+    return keys
 
 
 def _coerce_numeric(series: pd.Series) -> pd.Series:
@@ -56,6 +73,21 @@ def _derive_opt_total(df: pd.DataFrame) -> pd.Series:
         derived = derived.where(~(ratio_opt == 0))
         opt_total = opt_total.fillna(derived)
 
+    # Many legacy CSVs store the optimum policy as a regular row with ``dispatch``
+    # (and sometimes ``shadow`` or ``method``) equal to ``"opt"`` and without an
+    # explicit ``opt_total`` column.  Use the recorded savings from those rows as
+    # the ground truth optimum total for the corresponding trial.
+    opt_indicator = None
+    for column in ("dispatch", "shadow", "method"):
+        if column in df.columns:
+            column_mask = df[column].astype("string").str.lower() == "opt"
+            opt_indicator = column_mask if opt_indicator is None else (opt_indicator | column_mask)
+
+    if opt_indicator is not None:
+        savings = _coerce_numeric(df.get("savings", pd.Series(index=df.index))).astype("Float64")
+        opt_total = opt_total.mask(opt_indicator, savings)
+        opt_total = opt_total.fillna(savings.where(opt_indicator))
+
     return opt_total
 
 
@@ -71,7 +103,10 @@ def _build_opt_lookup(existing: pd.DataFrame) -> pd.Series:
             "needed to recover the optimum totals."
         )
 
+    key_frame = _normalized_trial_keys(existing)
     enriched = existing.assign(_opt_total=opt_total)
+    for column in TRIAL_KEY_COLUMNS:
+        enriched[column] = key_frame[column]
 
     representatives = []
     conflicts = []
@@ -118,7 +153,7 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
     _require_columns(new_rows, TRIAL_KEY_COLUMNS, label="New CSV")
 
     new_rows = new_rows.copy()
-    key_index = pd.MultiIndex.from_frame(new_rows.loc[:, TRIAL_KEY_COLUMNS])
+    key_index = pd.MultiIndex.from_frame(_normalized_trial_keys(new_rows))
     opt_from_lookup = lookup.reindex(key_index)
 
     if opt_from_lookup.isna().any():
@@ -134,6 +169,12 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
                 "file containing OPT totals and the second argument is the new "
                 "policy results to append."
             )
+
+        raise ValueError(
+            "Missing OPT totals for the following trial keys:\n"
+            + missing_unique.to_string(index=False)
+            + hint
+        )
 
     existing_opt_series = new_rows.get("opt_total")
     if existing_opt_series is None:
@@ -167,6 +208,14 @@ def merge_policy_results(existing_path: Path, new_path: Path, output_path: Path)
 
     opt_lookup = _build_opt_lookup(existing_df)
     new_df_with_opt = _apply_opt_metrics(new_df, opt_lookup)
+
+    # Pandas will change how it infers dtypes for columns that are entirely NA in
+    # a future release (see GH#54084).  Drop those columns from the new frame so
+    # the concat behaves consistently across versions and we avoid the warning.
+    if not new_df_with_opt.empty:
+        all_na_columns = [col for col in new_df_with_opt.columns if new_df_with_opt[col].isna().all()]
+        if all_na_columns:
+            new_df_with_opt = new_df_with_opt.drop(columns=all_na_columns)
 
     combined = pd.concat([existing_df, new_df_with_opt], ignore_index=True, sort=False)
 
