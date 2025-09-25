@@ -15,7 +15,10 @@ dependencies = [
   "networkx>=3.0",
   "pulp>=2.7",
   "matplotlib>=3.8",
-  "tqdm>=4.66"
+  "tqdm>=4.66",
+  "pandas>=2.1",
+  "h3>=3.7",
+  "folium>=0.15"
 ]
 
 [project.optional-dependencies]
