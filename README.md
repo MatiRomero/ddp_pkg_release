@@ -30,18 +30,22 @@ ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
   --ad_duals ad_means.npz --ad_mapping my_project.mappers:job_type --ad_missing hd
-# Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
+# Built-in uniform grid mapper (floors each origin/destination into 0.1-unit cells)
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
 # Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
 python -m ddp.scripts.build_average_duals data/hd_samples.csv \
   ddp.mappings.uniform_grid:mapping data/ad_uniform_grid.csv
+# Inspect coverage/variability for a dataset and (optionally) export an origin heatmap
+python -m ddp.scripts.inspect_average_duals data/hd_dataset_n100_d10.csv \
+  --mapping ddp.mappings.uniform_grid:mapping \
+  --heatmap reports/uniform_grid_origin_coverage.png
 ```
 
 Average-dual (``ad``) shadows map each job to a discrete type (via
 ``module:function`` provided to ``--ad_mapping``) and pull a mean dual value from
 the lookup passed to ``--ad_duals``. Tables may be ``.npz`` archives containing
-parallel ``types`` and ``mean_dual`` arrays or CSV files with ``type`` and
-``mean_dual`` columns. When a job's mapped type is absent, specify the fallback
+parallel ``types`` and ``mean_dual`` arrays or CSV files with ``type``, ``mean_dual``,
+and ``std_dev`` columns. When a job's mapped type is absent, specify the fallback
 behaviour with ``--ad_missing``: ``hd`` (default) replaces that job's shadow with
 the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts.
 The same options are available for ``ddp-trace-available`` and

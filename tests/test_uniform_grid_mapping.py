@@ -15,15 +15,15 @@ from ddp.mappings.uniform_grid import (  # noqa: E402
 
 
 class UniformGridMappingTest(unittest.TestCase):
-    def test_snap_rounds_to_nearest_cell(self) -> None:
+    def test_snap_floors_into_half_open_cells(self) -> None:
         mapping = UniformGridMapping(type_width=DEFAULT_WIDTH)
         key = mapping(0.12, -0.21, 0.86, 0.98)
-        self.assertEqual(key, ((0, 0), (2, 2)))
+        self.assertEqual(key, ((1, -3), (8, 9)))
 
     def test_expected_types_from_bounds(self) -> None:
         mapping = UniformGridMapping(
             type_width=COARSE_WIDTH,
-            origin_bounds=((0.0, 1.1), (-0.2, 0.8)),
+            origin_bounds=((0.0, 0.39), (0.0, 0.39)),
             dest_bounds=((0.0, 0.0), (0.0, 0.0)),
         )
         expected = mapping.expected_types
@@ -56,7 +56,7 @@ class MappingLoaderTest(unittest.TestCase):
             "ddp.mappings.uniform_grid:mapping"
         )
         self.assertTrue(callable(mapper))
-        self.assertEqual(mapper(0.0, 0.0, 0.51, 0.51), ((0, 0), (1, 1)))
+        self.assertEqual(mapper(0.0, 0.0, 0.11, 0.11), ((0, 0), (1, 1)))
         if expected is not None:
             self.assertIn(((0, 0), (0, 0)), expected)
 

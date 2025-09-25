@@ -21,24 +21,24 @@ class BuildAverageDualsTest(unittest.TestCase):
             hd_path = tmp_path / "hd.csv"
             rows = [
                 {
-                    "origin_x": "0.10",
-                    "origin_y": "0.20",
-                    "dest_x": "0.45",
-                    "dest_y": "0.45",
+                    "origin_x": "0.12",
+                    "origin_y": "0.18",
+                    "dest_x": "0.47",
+                    "dest_y": "0.52",
                     "hindsight_dual": "1.0",
                 },
                 {
-                    "origin_x": "0.22",
-                    "origin_y": "0.08",
-                    "dest_x": "0.46",
-                    "dest_y": "0.44",
+                    "origin_x": "0.19",
+                    "origin_y": "0.11",
+                    "dest_x": "0.43",
+                    "dest_y": "0.59",
                     "hindsight_dual": "3.0",
                 },
                 {
-                    "origin_x": "1.10",
-                    "origin_y": "-0.90",
-                    "dest_x": "-0.40",
-                    "dest_y": "0.40",
+                    "origin_x": "1.05",
+                    "origin_y": "-0.95",
+                    "dest_x": "-0.41",
+                    "dest_y": "0.33",
                     "hindsight_dual": "2.0",
                 },
             ]
@@ -55,19 +55,21 @@ class BuildAverageDualsTest(unittest.TestCase):
 
             with out_path.open(newline="") as handle:
                 reader = csv.DictReader(handle)
-                self.assertEqual(reader.fieldnames, ["type", "mean_dual", "count"])
+                self.assertEqual(reader.fieldnames, ["type", "mean_dual", "std_dev", "count"])
                 output_rows = list(reader)
 
             self.assertEqual(len(output_rows), 2)
             rows_by_type = {row["type"]: row for row in output_rows}
-            type_a = "((0, 0), (1, 1))"
-            type_b = "((2, -2), (-1, 1))"
+            type_a = "((1, 1), (4, 5))"
+            type_b = "((10, -10), (-5, 3))"
             self.assertIn(type_a, rows_by_type)
             self.assertIn(type_b, rows_by_type)
             self.assertEqual(rows_by_type[type_a]["count"], "2")
             self.assertEqual(rows_by_type[type_b]["count"], "1")
             self.assertAlmostEqual(float(rows_by_type[type_a]["mean_dual"]), 2.0)
             self.assertAlmostEqual(float(rows_by_type[type_b]["mean_dual"]), 2.0)
+            self.assertAlmostEqual(float(rows_by_type[type_a]["std_dev"]), 1.0)
+            self.assertAlmostEqual(float(rows_by_type[type_b]["std_dev"]), 0.0)
 
             table = load_average_duals(str(out_path))
             mapper = load_average_dual_mapper("ddp.mappings.uniform_grid:job_mapping")
