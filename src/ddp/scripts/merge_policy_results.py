@@ -124,10 +124,16 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
     if opt_from_lookup.isna().any():
         missing_mask = opt_from_lookup.isna().to_numpy()
         missing = new_rows.loc[missing_mask, TRIAL_KEY_COLUMNS]
-        raise ValueError(
-            "Missing OPT totals for the following trial keys:\n"
-            + missing.to_string(index=False)
-        )
+        missing_unique = missing.drop_duplicates()
+
+        hint = ""
+        if missing_mask.all():
+            hint = (
+                "\nNo matching trial keys were found in the existing CSV. "
+                "Double-check that the first CLI argument points to the baseline "
+                "file containing OPT totals and the second argument is the new "
+                "policy results to append."
+            )
 
     existing_opt_series = new_rows.get("opt_total")
     if existing_opt_series is None:
