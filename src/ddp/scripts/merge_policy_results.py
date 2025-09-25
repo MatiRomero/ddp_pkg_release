@@ -122,7 +122,8 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
     opt_from_lookup = lookup.reindex(key_index)
 
     if opt_from_lookup.isna().any():
-        missing = new_rows.loc[opt_from_lookup.isna(), TRIAL_KEY_COLUMNS]
+        missing_mask = opt_from_lookup.isna().to_numpy()
+        missing = new_rows.loc[missing_mask, TRIAL_KEY_COLUMNS]
         raise ValueError(
             "Missing OPT totals for the following trial keys:\n"
             + missing.to_string(index=False)
