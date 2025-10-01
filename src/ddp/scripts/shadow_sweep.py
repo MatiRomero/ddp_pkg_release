@@ -175,12 +175,9 @@ def _format_value(val: float) -> str:
     return f"{val:g}"
 
 
-def _run_sweep(
+def _run_sweep_from_trial_jobs(
     *,
-    n: int,
     d: float,
-    trials: int,
-    seed0: int,
     dispatch: str,
     metric: str,
     gamma_values: Sequence[float],
@@ -190,11 +187,12 @@ def _run_sweep(
     ad_duals: Mapping[str, float] | None,
     ad_mapping: Callable[[Job], str | None] | None,
     ad_missing: str,
+    trial_jobs: Sequence[tuple[int, Mapping[str, Sequence[Job]]]],
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
 
-    trial_jobs = _prepare_trials(n, trials, seed0, geometries)
+    trial_jobs = list(trial_jobs)
 
     heatmap: dict[str, dict[str, np.ndarray]] = {
         geom.name: {
@@ -207,6 +205,7 @@ def _run_sweep(
     records: list[dict] = []
     best_entries: list[tuple[GeometryPreset, str, float | None, float | None, float | None]] = []
 
+    trials = len(trial_jobs)
     total_trials = (
         len(geometries)
         * len(shadows)
@@ -294,6 +293,42 @@ def _run_sweep(
         progress_bar.close()
 
     return heatmap, records, best_entries
+
+
+def _run_sweep(
+    *,
+    n: int,
+    d: float,
+    trials: int,
+    seed0: int,
+    dispatch: str,
+    metric: str,
+    gamma_values: Sequence[float],
+    tau_values: Sequence[float],
+    geometries: Sequence[GeometryPreset],
+    shadows: Sequence[str],
+    ad_duals: Mapping[str, float] | None,
+    ad_mapping: Callable[[Job], str | None] | None,
+    ad_missing: str,
+    progress: bool = True,
+) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
+    """Generate synthetic trials then delegate to :func:`_run_sweep_from_trial_jobs`."""
+
+    trial_jobs = _prepare_trials(n, trials, seed0, geometries)
+    return _run_sweep_from_trial_jobs(
+        d=d,
+        dispatch=dispatch,
+        metric=metric,
+        gamma_values=gamma_values,
+        tau_values=tau_values,
+        geometries=geometries,
+        shadows=shadows,
+        ad_duals=ad_duals,
+        ad_mapping=ad_mapping,
+        ad_missing=ad_missing,
+        trial_jobs=trial_jobs,
+        progress=progress,
+    )
 
 
 def _plot_heatmaps(
