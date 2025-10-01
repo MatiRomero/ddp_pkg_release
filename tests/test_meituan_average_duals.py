@@ -14,6 +14,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - handled via skip
     h3 = None  # type: ignore[assignment]
 
+import numpy as np
+
 H3_AVAILABLE = h3 is not None and (
     hasattr(h3, "geo_to_h3") or hasattr(h3, "latlng_to_cell")
 )
@@ -29,8 +31,10 @@ from ddp.scripts.meituan_average_duals import (  # noqa: E402
     add_h3_columns,
     aggregate_by_hex,
     ensure_hd_cache,
+    main,
     export_average_duals_csv,
     export_average_duals_npz,
+    PipelineResult,
     _neighbor_pairs,
     match_average_duals,
 )
@@ -174,6 +178,81 @@ class MeituanAverageDualsTest(unittest.TestCase):
         )
         self.assertEqual(zeroed.iloc[0]["ad_source"], "zero_fallback")
         self.assertEqual(zeroed.iloc[0]["ad_mean"], 0.0)
+
+    def test_main_writes_default_exports(self) -> None:
+        summary_df = pd.DataFrame(
+            [
+                {
+                    "sender_hex": "abc",
+                    "recipient_hex": "def",
+                    "type": "('abc', 'def')",
+                    "mean_dual": 1.5,
+                    "std_dual": 0.2,
+                    "count": 3,
+                }
+            ],
+            columns=["sender_hex", "recipient_hex", "type", "mean_dual", "std_dual", "count"],
+        )
+        target_df = pd.DataFrame([
+            {"day": 5, "job_index": 0, "ad_mean": 1.5},
+        ])
+        history_df = pd.DataFrame([
+            {"day": 4, "job_index": 0, "hindsight_dual": 2.0},
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            cache_dir = tmp_path / "cache"
+
+            pipeline_result = PipelineResult(
+                target=target_df,
+                history=history_df,
+                summary=summary_df,
+            )
+
+            with mock.patch(
+                "ddp.scripts.meituan_average_duals.build_average_duals",
+                return_value=pipeline_result,
+            ) as build_mock:
+                exit_code = main(
+                    [
+                        "--day",
+                        "5",
+                        "--data-dir",
+                        str(tmp_path / "data"),
+                        "--cache-dir",
+                        str(cache_dir),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_called_once()
+
+            stem = "meituan_ad_day5_d20_res8"
+            summary_path = cache_dir / f"{stem}_summary.csv"
+            ad_csv_path = cache_dir / f"{stem}_lookup.csv"
+            ad_npz_path = cache_dir / f"{stem}_lookup.npz"
+            target_path = cache_dir / f"{stem}_full.csv"
+
+            self.assertTrue(summary_path.exists())
+            self.assertTrue(ad_csv_path.exists())
+            self.assertTrue(ad_npz_path.exists())
+            self.assertTrue(target_path.exists())
+
+            summary_loaded = pd.read_csv(summary_path)
+            pd.testing.assert_frame_equal(summary_loaded, summary_df, check_dtype=False)
+
+            target_loaded = pd.read_csv(target_path)
+            pd.testing.assert_frame_equal(target_loaded, target_df, check_dtype=False)
+
+            ad_lookup_loaded = pd.read_csv(ad_csv_path)
+            self.assertEqual(list(ad_lookup_loaded.columns), ["type", "mean_dual"])
+            self.assertEqual(ad_lookup_loaded.iloc[0]["type"], "('abc', 'def')")
+            self.assertAlmostEqual(ad_lookup_loaded.iloc[0]["mean_dual"], 1.5)
+
+            with np.load(ad_npz_path) as npz:
+                self.assertEqual(npz["types"].tolist(), ["('abc', 'def')"])
+                self.assertTrue(np.allclose(npz["mean_dual"], np.array([1.5])))
 
     def test_ensure_hd_cache_uses_deadline_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

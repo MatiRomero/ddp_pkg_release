@@ -557,6 +557,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory for cached per-day HD dual CSV files",
     )
     parser.add_argument(
+        "--export-dir",
+        type=Path,
+        help="Directory for default exports when explicit paths are omitted",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Recompute HD duals even when cached files exist",
@@ -603,6 +608,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _install_signal_handlers()
 
+    deadline_tag = _format_deadline(float(args.deadline))
+    stem = f"meituan_ad_day{int(args.day)}_d{deadline_tag}_res{int(args.resolution)}"
+    default_export_dir = Path(args.export_dir) if args.export_dir else Path(args.cache_dir)
+
     result = build_average_duals(
         day=int(args.day),
         data_dir=args.data_dir,
@@ -617,21 +626,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         force=bool(args.force),
     )
 
-    if args.export_summary:
-        args.export_summary.parent.mkdir(parents=True, exist_ok=True)
-        result.summary.to_csv(args.export_summary, index=False)
-        print(f"Wrote summary table to {args.export_summary}")
+    summary_path = args.export_summary or (default_export_dir / f"{stem}_summary.csv")
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    result.summary.to_csv(summary_path, index=False)
+    print(f"Wrote summary table to {summary_path}")
 
-    if args.export_ad_csv:
-        export_average_duals_csv(result.summary, args.export_ad_csv)
+    ad_csv_path = args.export_ad_csv or (default_export_dir / f"{stem}_lookup.csv")
+    export_average_duals_csv(result.summary, ad_csv_path)
 
-    if args.export_ad_npz:
-        export_average_duals_npz(result.summary, args.export_ad_npz)
+    ad_npz_path = args.export_ad_npz or (default_export_dir / f"{stem}_lookup.npz")
+    export_average_duals_npz(result.summary, ad_npz_path)
 
-    if args.export_target:
-        args.export_target.parent.mkdir(parents=True, exist_ok=True)
-        result.target.to_csv(args.export_target, index=False)
-        print(f"Wrote target day records to {args.export_target}")
+    target_path = args.export_target or (default_export_dir / f"{stem}_full.csv")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    result.target.to_csv(target_path, index=False)
+    print(f"Wrote target day records to {target_path}")
 
     if args.folium_map:
         save_summary_map(result.summary, args.folium_map)
