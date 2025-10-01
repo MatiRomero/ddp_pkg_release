@@ -143,6 +143,36 @@ converts trailing ``Z`` markers to ``+00:00`` automatically; ensure any local
 timezones are encoded directly in the CSV if you need precise alignment with
 external datasets.
 
+### Meituan gamma/tau sweeps
+
+`ddp.scripts.meituan_shadow_sweep` reuses the synthetic sweep helpers but feeds
+them real Meituan snapshots instead of geometry presets. Supply one or more
+CSV files (either via repeated ``--jobs-csv`` flags or a glob pattern) and the
+command will treat each file as an independent trial while aggregating the
+requested metric across the gamma/tau grid. The AD integration mirrors the
+standard shadow sweep, so you can point ``--ad-duals`` at the average-dual
+tables produced by the H3 pipeline and reuse the ``job_mapping`` helper.
+
+```bash
+python -m ddp.scripts.meituan_shadow_sweep \
+  --jobs-csv "data/meituan_city_lunchtime_plat10301330_day0.csv" \
+  --jobs-csv "data/meituan_city_lunchtime_plat10301330_day1.csv" \
+  --jobs-csv "data/meituan_city_lunchtime_plat10301330_day2.csv" \
+  --timestamp-column platform_order_time \
+  --gamma-values 0.5:1.5:0.25 \
+  --tau-values 0:2:1 \
+  --dispatch batch \
+  --shadows naive,pb,ad \
+  --ad-duals data/average_duals/meituan_lunch_ad.npz \
+  --ad-mapping ddp.mappings.h3_pairs:job_mapping \
+  --out results/meituan_shadow_heatmap.png \
+  --csv results/meituan_shadow_summary.csv
+```
+
+The same arguments work with the repository wrapper
+(``python scripts/run_meituan_shadow_sweep.py ...``) when you prefer calling the
+package CLI from the project root.
+
 ## Aggregate and Plot Results
 
 To run multiple trials and aggregate results across all shadow × dispatch combinations:
