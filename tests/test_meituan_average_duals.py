@@ -14,7 +14,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - handled via skip
     h3 = None  # type: ignore[assignment]
 
-H3_AVAILABLE = h3 is not None and hasattr(h3, "geo_to_h3")
+H3_AVAILABLE = h3 is not None and (
+    hasattr(h3, "geo_to_h3") or hasattr(h3, "latlng_to_cell")
+)
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -27,6 +29,7 @@ from ddp.scripts.meituan_average_duals import (  # noqa: E402
     add_h3_columns,
     aggregate_by_hex,
     ensure_hd_cache,
+    _neighbor_pairs,
     match_average_duals,
 )
 
@@ -52,10 +55,10 @@ class MeituanAverageDualsTest(unittest.TestCase):
                     "hindsight_dual": 4.0,
                 },
                 {
-                    "sender_lat": 39.85,
-                    "sender_lng": 116.35,
-                    "recipient_lat": 39.88,
-                    "recipient_lng": 116.33,
+                    "sender_lat": 39.30,
+                    "sender_lng": 116.00,
+                    "recipient_lat": 39.40,
+                    "recipient_lng": 116.10,
                     "hindsight_dual": 1.0,
                 },
             ]
@@ -74,7 +77,8 @@ class MeituanAverageDualsTest(unittest.TestCase):
     def test_neighbor_fallback_and_missing_policy(self) -> None:
         mapper = make_mapping(5)
         base_sender, base_recipient = mapper(39.90, 116.40, 39.92, 116.42)
-        neighbor_sender = next(iter(h3.k_ring(base_sender, 1) - {base_sender}))
+        neighbor_sender = next(iter(_neighbor_pairs(base_sender, 1) - {base_sender}))
+        missing_sender, missing_recipient = mapper(39.10, 116.20, 39.15, 116.25)
         summary = pd.DataFrame(
             [
                 {
@@ -95,8 +99,8 @@ class MeituanAverageDualsTest(unittest.TestCase):
                     "hindsight_dual": 9.0,
                 },
                 {
-                    "sender_hex": "871f3d3fffffff",
-                    "recipient_hex": "871f3d7fffffff",
+                    "sender_hex": missing_sender,
+                    "recipient_hex": missing_recipient,
                     "hindsight_dual": 5.0,
                 },
             ]
@@ -120,8 +124,8 @@ class MeituanAverageDualsTest(unittest.TestCase):
             neighbor_radius=0,
             missing_policy="zero",
         )
-        self.assertEqual(zeroed.loc[0, "ad_source"], "zero_fallback")
-        self.assertEqual(zeroed.loc[0, "ad_mean"], 0.0)
+        self.assertEqual(zeroed.iloc[0]["ad_source"], "zero_fallback")
+        self.assertEqual(zeroed.iloc[0]["ad_mean"], 0.0)
 
     def test_ensure_hd_cache_uses_deadline_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

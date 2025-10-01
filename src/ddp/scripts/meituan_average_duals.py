@@ -179,7 +179,19 @@ def aggregate_by_hex(frame: "pd.DataFrame") -> "pd.DataFrame":
 def _neighbor_pairs(hex_id: str, radius: int) -> set[str]:
     if radius <= 0:
         return {hex_id}
-    return set(h3.k_ring(hex_id, radius))
+    if hasattr(h3, "k_ring"):
+        return set(h3.k_ring(hex_id, radius))
+    if hasattr(h3, "grid_disk"):
+        neighbors = h3.grid_disk(hex_id, radius)
+        flattened: set[str] = set()
+        for entry in neighbors:
+            if isinstance(entry, (list, tuple, set)):
+                flattened.update(str(cell) for cell in entry)
+            else:
+                flattened.add(str(entry))
+        return flattened
+    msg = "Compatible h3 API not available: expected k_ring or grid_disk"
+    raise AttributeError(msg)
 
 
 def match_average_duals(

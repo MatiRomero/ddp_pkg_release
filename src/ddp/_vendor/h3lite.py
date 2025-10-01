@@ -28,6 +28,12 @@ def geo_to_h3(lat: float, lng: float, resolution: int) -> str:
     return _encode(resolution, lat_idx, lng_idx)
 
 
+def latlng_to_cell(lat: float, lng: float, resolution: int) -> str:
+    """Compatibility alias for the modern ``h3`` API."""
+
+    return geo_to_h3(lat, lng, resolution)
+
+
 def h3_to_geo(index: str) -> tuple[float, float]:
     resolution, lat_idx, lng_idx = _decode(index)
     scale = _scale(resolution)
