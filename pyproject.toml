@@ -37,6 +37,7 @@ ddp-plot  = "ddp.scripts.plot_results:main"
 ddp-plot-sweep = "ddp.scripts.plot_sweep:main"
 ddp-bench-opt = "ddp.scripts.bench_opt_methods:main"
 ddp-shadow-sweep = "ddp.scripts.shadow_sweep:main"
+ddp-plot-shadow-sweep = "ddp.scripts.plot_shadow_sweep:main"
 ddp-trace-available = "ddp.scripts.trace_available:main"
 ddp-inspect-average-duals = "ddp.scripts.inspect_average_duals:main"
 
