@@ -29,9 +29,12 @@ from ddp.scripts.meituan_average_duals import (  # noqa: E402
     add_h3_columns,
     aggregate_by_hex,
     ensure_hd_cache,
+    export_average_duals_csv,
+    export_average_duals_npz,
     _neighbor_pairs,
     match_average_duals,
 )
+from ddp.scripts.run import load_average_duals  # noqa: E402
 
 
 @unittest.skipIf(pd is None or not H3_AVAILABLE, "pandas and h3 are required for these tests")
@@ -69,10 +72,55 @@ class MeituanAverageDualsTest(unittest.TestCase):
         self.assertIn("recipient_hex", enriched.columns)
 
         summary = aggregate_by_hex(enriched)
-        self.assertEqual(set(summary.columns), {"sender_hex", "recipient_hex", "mean_dual", "std_dual", "count"})
+        self.assertEqual(
+            set(summary.columns),
+            {"sender_hex", "recipient_hex", "type", "mean_dual", "std_dual", "count"},
+        )
+        for row in summary.itertuples(index=False):
+            self.assertEqual(row.type, str((row.sender_hex, row.recipient_hex)))
         self.assertEqual(summary.loc[summary["count"] == 2, "mean_dual"].iloc[0], 3.0)
         self.assertAlmostEqual(summary.loc[summary["count"] == 2, "std_dual"].iloc[0], 1.0)
         self.assertEqual(sorted(summary["count"]), [1, 2])
+
+    def test_export_average_duals_roundtrip(self) -> None:
+        mapper = make_mapping(5)
+        frame = pd.DataFrame(
+            [
+                {
+                    "sender_lat": 39.90,
+                    "sender_lng": 116.40,
+                    "recipient_lat": 39.92,
+                    "recipient_lng": 116.42,
+                    "hindsight_dual": 2.0,
+                },
+                {
+                    "sender_lat": 39.30,
+                    "sender_lng": 116.00,
+                    "recipient_lat": 39.40,
+                    "recipient_lng": 116.10,
+                    "hindsight_dual": 1.0,
+                },
+            ]
+        )
+
+        enriched = add_h3_columns(frame, mapper)
+        summary = aggregate_by_hex(enriched)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = pathlib.Path(tmpdir)
+            csv_path = tmpdir_path / "ad_lookup.csv"
+            npz_path = tmpdir_path / "ad_lookup.npz"
+
+            export_average_duals_csv(summary, csv_path)
+            export_average_duals_npz(summary, npz_path)
+
+            expected = {row.type: float(row.mean_dual) for row in summary.itertuples(index=False)}
+
+            csv_loaded = load_average_duals(str(csv_path))
+            npz_loaded = load_average_duals(str(npz_path))
+
+            self.assertEqual(csv_loaded, expected)
+            self.assertEqual(npz_loaded, expected)
 
     def test_neighbor_fallback_and_missing_policy(self) -> None:
         mapper = make_mapping(5)

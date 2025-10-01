@@ -168,7 +168,58 @@ def aggregate_by_hex(frame: "pd.DataFrame") -> "pd.DataFrame":
     )
     summary.reset_index(inplace=True)
     summary["count"] = summary["count"].astype(int)
+    summary["type"] = [
+        str((sender_hex, recipient_hex))
+        for sender_hex, recipient_hex in summary[["sender_hex", "recipient_hex"]].itertuples(index=False, name=None)
+    ]
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Average-dual export helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_lookup_columns(summary: "pd.DataFrame") -> None:
+    required = {"type", "mean_dual"}
+    missing = required.difference(summary.columns)
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(f"Summary frame is missing required columns: {missing_list}")
+
+
+def export_average_duals_csv(summary: "pd.DataFrame", output: Path) -> None:
+    """Write a runtime-ready CSV lookup table for ``summary``."""
+
+    _require_pandas()
+    _ensure_lookup_columns(summary)
+
+    lookup = summary.loc[:, ["type", "mean_dual"]].copy()
+    lookup["type"] = lookup["type"].astype(str)
+    lookup["mean_dual"] = lookup["mean_dual"].astype(float)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lookup.to_csv(output, index=False)
+    print(f"Wrote runtime average-dual CSV to {output}")
+
+
+def export_average_duals_npz(summary: "pd.DataFrame", output: Path) -> None:
+    """Write a runtime-ready NPZ lookup table for ``summary``."""
+
+    _ensure_lookup_columns(summary)
+
+    type_series = summary["type"].astype(str)
+    if type_series.empty:
+        types = np.array([], dtype="<U1")
+    else:
+        max_len = int(type_series.str.len().max())
+        dtype = f"<U{max(1, max_len)}"
+        types = np.asarray(type_series.tolist(), dtype=dtype)
+    means = summary["mean_dual"].astype(float).to_numpy()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output, types=types, mean_dual=means)
+    print(f"Wrote runtime average-dual NPZ to {output}")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +432,9 @@ def build_average_duals(
         summary = aggregate_by_hex(history_frame)
     else:
         history_frame = _pd.DataFrame(columns=target_frame.columns)
-        summary = _pd.DataFrame(columns=["sender_hex", "recipient_hex", "mean_dual", "std_dual", "count"])
+        summary = _pd.DataFrame(
+            columns=["sender_hex", "recipient_hex", "mean_dual", "std_dual", "count", "type"]
+        )
 
     enriched_target = match_average_duals(
         target_frame,
@@ -514,6 +567,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional CSV path for the aggregated average-dual table",
     )
     parser.add_argument(
+        "--export-ad-csv",
+        type=Path,
+        help="Optional CSV path for a runtime-ready average-dual lookup",
+    )
+    parser.add_argument(
+        "--export-ad-npz",
+        type=Path,
+        help="Optional NPZ path for a runtime-ready average-dual lookup",
+    )
+    parser.add_argument(
         "--export-target",
         type=Path,
         help="Optional CSV path for the target day with attached AD means",
@@ -558,6 +621,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.export_summary.parent.mkdir(parents=True, exist_ok=True)
         result.summary.to_csv(args.export_summary, index=False)
         print(f"Wrote summary table to {args.export_summary}")
+
+    if args.export_ad_csv:
+        export_average_duals_csv(result.summary, args.export_ad_csv)
+
+    if args.export_ad_npz:
+        export_average_duals_npz(result.summary, args.export_ad_npz)
 
     if args.export_target:
         args.export_target.parent.mkdir(parents=True, exist_ok=True)
