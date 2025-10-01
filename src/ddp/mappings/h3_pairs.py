@@ -32,6 +32,17 @@ __all__ = [
 _DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
+def _cell_from_latlng(lat: float, lng: float, resolution: int) -> str:
+    """Return the H3 cell for the given ``lat``/``lng`` pair."""
+
+    if hasattr(h3, "geo_to_h3"):
+        return h3.geo_to_h3(lat, lng, resolution)
+    if hasattr(h3, "latlng_to_cell"):
+        return h3.latlng_to_cell(lat, lng, resolution)
+    msg = "Compatible h3 API not available: expected geo_to_h3 or latlng_to_cell"
+    raise AttributeError(msg)
+
+
 @dataclass(**_DATACLASS_KWARGS)
 class H3PairMapping:
     """Quantise origin/destination points into H3 cells."""
@@ -55,8 +66,8 @@ class H3PairMapping:
     ) -> TypeKey:
         """Return the H3 cells for the origin and destination."""
 
-        origin_hex = h3.geo_to_h3(origin_lat, origin_lng, self.resolution)
-        dest_hex = h3.geo_to_h3(dest_lat, dest_lng, self.resolution)
+        origin_hex = _cell_from_latlng(origin_lat, origin_lng, self.resolution)
+        dest_hex = _cell_from_latlng(dest_lat, dest_lng, self.resolution)
         return origin_hex, dest_hex
 
 
