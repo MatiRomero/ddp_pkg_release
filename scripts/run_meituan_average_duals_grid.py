@@ -16,6 +16,15 @@ from ddp.scripts.meituan_average_duals import (
     save_summary_map,
 )
 
+DEFAULT_EXPORT_BASE = Path("data/average_duals")
+DEFAULT_EXPORT_STEM = "meituan_ad_day{day}_d{d}_res{r}"
+DEFAULT_EXPORT_SUMMARY_TEMPLATE = str(
+    DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_summary.csv"
+)
+DEFAULT_EXPORT_TARGET_TEMPLATE = str(
+    DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_full.csv"
+)
+
 LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -184,12 +193,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--export-summary",
         type=str,
-        help="Optional template for CSV path of aggregated average-dual tables",
+        help=(
+            "Optional template for CSV path of aggregated average-dual tables "
+            f"(default: {DEFAULT_EXPORT_SUMMARY_TEMPLATE})"
+        ),
     )
     parser.add_argument(
         "--export-target",
         type=str,
-        help="Optional template for CSV path of target day with attached AD means",
+        help=(
+            "Optional template for CSV path of target day with attached AD means "
+            f"(default: {DEFAULT_EXPORT_TARGET_TEMPLATE})"
+        ),
     )
     parser.add_argument(
         "--folium-map",
@@ -296,6 +311,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="%(levelname)s: %(message)s",
     )
 
+    export_summary_template = args.export_summary or DEFAULT_EXPORT_SUMMARY_TEMPLATE
+    export_target_template = args.export_target or DEFAULT_EXPORT_TARGET_TEMPLATE
+
     run_grid(
         days=args.days,
         deadlines=args.deadlines,
@@ -308,8 +326,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         history_days=args.history_days,
         cache_dir=args.cache_dir,
         force=bool(args.force),
-        export_summary_template=args.export_summary,
-        export_target_template=args.export_target,
+        export_summary_template=export_summary_template,
+        export_target_template=export_target_template,
         folium_map_template=args.folium_map,
     )
 
