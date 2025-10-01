@@ -92,6 +92,9 @@ def main(argv: list[str] | None = None) -> None:
 
     combined = combine(args.inputs)
 
+    if "n" in combined.columns:
+        combined = combined.drop(columns=["n"])
+
     out_path = Path(args.out).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     combined.to_csv(out_path, index=False, lineterminator="\n")
