@@ -559,7 +559,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--export-dir",
         type=Path,
-        help="Directory for default exports when explicit paths are omitted",
+        default=Path("data/average_duals"),
+        help="Directory for default exports when explicit paths are omitted (default: %(default)s)",
     )
     parser.add_argument(
         "--force",
@@ -610,7 +611,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     deadline_tag = _format_deadline(float(args.deadline))
     stem = f"meituan_ad_day{int(args.day)}_d{deadline_tag}_res{int(args.resolution)}"
-    default_export_dir = Path(args.export_dir) if args.export_dir else Path(args.cache_dir)
+    default_export_dir = Path(args.export_dir)
+    default_export_dir.mkdir(parents=True, exist_ok=True)
 
     result = build_average_duals(
         day=int(args.day),
