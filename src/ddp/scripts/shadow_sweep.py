@@ -254,6 +254,7 @@ def _run_sweep_from_trial_jobs(
                                 ad_duals=ad_duals,
                                 ad_mapping=ad_mapping,
                                 ad_missing=ad_missing,
+                                ad_duals_path=args.ad_duals,
                             )
                             row = result["rows"][0]
                             metric_value = _extract_metric(row, metric)
@@ -519,8 +520,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ad-missing",
-        choices=("hd", "zero", "error"),
-        default="hd",
+        choices=("neighbor", "hd", "zero", "error"),
+        default="neighbor",
         help=(
             "Policy for jobs whose type is absent from the average-dual table when "
             "evaluating AD shadows"

@@ -44,9 +44,10 @@ The resulting dictionary maps type strings to mean duals and can be shared acros
 
 ## 4. Runtime consumption and fallback policies
 
-At simulation time (`ddp.scripts.run`), AD shadows are enabled by passing both the table (`--ad_duals`) and the mapper (`--ad_mapping`). Jobs are mapped to type keys and filled with the corresponding averages. Missing entries trigger one of three policies controlled by `--ad_missing`:
+At simulation time (`ddp.scripts.run`), AD shadows are enabled by passing both the table (`--ad_duals`) and the mapper (`--ad_mapping`). Jobs are mapped to type keys and filled with the corresponding averages. Missing entries trigger one of four policies controlled by `--ad_missing`:
 
-* `hd` (default): fall back to the job’s original HD dual from the LP relaxation.
+* `neighbor` (default): iteratively expand the sender/recipient H3 disks until a populated neighbour pair is found, then fall back to the HD dual when no neighbour exists.
+* `hd`: immediately fall back to the job’s original HD dual from the LP relaxation.
 * `zero`: substitute `0.0`.
 * `error`: abort with `AverageDualError` listing the unresolved types.
 
@@ -57,7 +58,7 @@ The helper `_resolve_average_duals` applies the mapping, records missing keys, a
 1. **Sample HD duals** with `python -m ddp.scripts.build_hd_dataset --out_csv hd_samples.csv ...` to produce the per-job CSV described above.
 2. **Define or adapt a type mapper** that converts `Job` objects into type strings, possibly by wrapping a coordinate-based helper like the uniform grid.
 3. **Aggregate by type** to compute mean duals, saving the lookup as an NPZ (`types`, `mean_dual`) or CSV (`type`, `mean_dual`, `std_dev`).
-4. **Run experiments** with `python -m ddp.scripts.run --shadows ad --ad_duals ... --ad_mapping ... --ad_missing {hd,zero,error}` so AD shadows use the prepared table with the chosen fallback policy.
+4. **Run experiments** with `python -m ddp.scripts.run --shadows ad --ad_duals ... --ad_mapping ... --ad_missing {neighbor,hd,zero,error}` so AD shadows use the prepared table with the chosen fallback policy.
 
 This pipeline keeps HD sampling, type assignment, and runtime evaluation decoupled, making it straightforward to iterate on new mappers or dataset slices without modifying the simulation logic.
 

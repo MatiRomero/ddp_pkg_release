@@ -163,8 +163,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ad-missing",
-        choices=("hd", "zero", "error"),
-        default="hd",
+        choices=("neighbor", "hd", "zero", "error"),
+        default="neighbor",
         help="Fallback policy for jobs missing from the average-dual table",
     )
     parser.add_argument(

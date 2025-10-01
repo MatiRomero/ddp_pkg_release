@@ -72,7 +72,7 @@ def _shadow_vector(
         lp = compute_lp_relaxation(jobs_list, reward_fn, time_window=time_window)
         duals = np.array(lp["duals"], dtype=float)
         try:
-            sp, missing = _resolve_average_duals(
+            sp, missing, _assignments, _table = _resolve_average_duals(
                 jobs_list,
                 duals,
                 ad_duals,
@@ -216,8 +216,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--ad_missing",
-        default="hd",
-        choices=["hd", "zero", "error"],
+        default="neighbor",
+        choices=["neighbor", "hd", "zero", "error"],
         help=(
             "Policy for jobs whose mapped type is absent in the average-dual table."
         ),
