@@ -156,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     else:
         grouped["std_value"] = float("nan")
 
-    if grouped.empty():
+    if grouped.empty:
         raise SystemExit("Grouping operation produced no data to plot")
 
     fig, ax = plt.subplots()
