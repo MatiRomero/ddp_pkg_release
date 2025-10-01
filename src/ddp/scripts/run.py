@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import importlib
 import os
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
@@ -16,6 +19,11 @@ from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward
 from ddp.scripts.csv_loader import load_jobs_from_csv
 
+try:  # pragma: no cover - optional dependency for neighbour search
+    import h3  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - fallback for environments without h3
+    from ddp._vendor import h3lite as h3  # type: ignore[assignment]
+
 DispatchState = tuple[
     Callable[[int, int, Sequence[Job]], float],
     Callable[[int, int, Sequence[Job]], float],
@@ -25,6 +33,20 @@ DispatchState = tuple[
 
 class AverageDualError(RuntimeError):
     """Raised when average-dual shadows cannot be constructed."""
+
+
+@dataclass
+class AverageDualAssignment:
+    """Book-keeping for how each job received its average-dual value."""
+
+    job_index: int
+    type_key: str | None
+    sender_hex: str | None
+    recipient_hex: str | None
+    value: float | None
+    source: str
+    neighbor_radius: int | None = None
+    neighbor_source_type: str | None = None
 
 
 def load_average_duals(path: str) -> dict[str, float]:
@@ -101,6 +123,79 @@ def load_average_dual_mapper(spec: str) -> Callable[[Job], str | None]:
     return func
 
 
+def _is_valid_hex(cell: str | None) -> bool:
+    if cell is None:
+        return False
+    try:
+        checker = getattr(h3, "h3_is_valid", None)
+        if checker is None:
+            return True
+        return bool(checker(cell))
+    except Exception:  # pragma: no cover - defensive against exotic bindings
+        return True
+
+
+def _parse_hex_pair(key: str | tuple[str, str] | list[str]) -> tuple[str, str] | None:
+    """Best-effort conversion of ``key`` into an ``(origin_hex, dest_hex)`` pair."""
+
+    candidate = key
+    if isinstance(candidate, str):
+        try:
+            candidate = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+    if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+        sender, recipient = candidate
+        if isinstance(sender, str) and isinstance(recipient, str):
+            if _is_valid_hex(sender) and _is_valid_hex(recipient):
+                return sender, recipient
+    return None
+
+
+def _hex_disk(hex_id: str, radius: int) -> set[str]:
+    if radius <= 0:
+        return {hex_id}
+    if hasattr(h3, "grid_disk"):
+        neighbors = h3.grid_disk(hex_id, radius)
+    elif hasattr(h3, "k_ring"):
+        neighbors = h3.k_ring(hex_id, radius)
+    else:  # pragma: no cover - unsupported binding
+        raise AttributeError("Compatible h3 API not available for neighbour search")
+    return {str(entry) for entry in neighbors if isinstance(entry, str)}
+
+
+def _build_neighbor_index(table: Mapping[str, float]) -> dict[tuple[str, str], float]:
+    index: dict[tuple[str, str], float] = {}
+    for key, value in table.items():
+        pair = _parse_hex_pair(key)
+        if pair is not None:
+            index[pair] = float(value)
+    return index
+
+
+def _find_neighbor_candidate(
+    pair: tuple[str, str],
+    table_index: Mapping[tuple[str, str], float],
+    *,
+    max_radius: int = 15,
+) -> tuple[float | None, tuple[str, str] | None, int | None]:
+    """Return the first neighbour dual reachable within ``max_radius``."""
+
+    if not table_index:
+        return None, None, None
+
+    sender_hex, recipient_hex = pair
+    for radius in range(1, max_radius + 1):
+        sender_neighbors = _hex_disk(sender_hex, radius)
+        recipient_neighbors = _hex_disk(recipient_hex, radius)
+        for sender_candidate in sender_neighbors:
+            for recipient_candidate in recipient_neighbors:
+                match = table_index.get((sender_candidate, recipient_candidate))
+                if match is not None:
+                    return float(match), (sender_candidate, recipient_candidate), radius
+    return None, None, None
+
+
 def _resolve_average_duals(
     jobs: Sequence[Job],
     duals: np.ndarray,
@@ -108,29 +203,88 @@ def _resolve_average_duals(
     mapper: Callable[[Job], str | None],
     *,
     missing: str,
-) -> tuple[np.ndarray, list[tuple[int, str | None]]]:
-    """Return average-dual shadows and report missing job types."""
+
+) -> tuple[
+    np.ndarray,
+    list[tuple[int, str | None]],
+    list[AverageDualAssignment],
+    dict[str, float],
+]:
+    """Return average-dual shadows, missing records, and per-job assignment details."""
+
+    table_dict = dict(table)
+    neighbor_index = _build_neighbor_index(table_dict)
 
     sp = np.zeros(len(jobs), dtype=float)
     missing_records: list[tuple[int, str | None]] = []
+    assignments: list[AverageDualAssignment] = []
     for idx, job in enumerate(jobs):
         key = mapper(job)
+        sender_hex = recipient_hex = None
+        key_str: str | None = None
+        if key is not None:
+            key_str = str(key)
+            parsed = _parse_hex_pair(key)
+            if parsed is not None:
+                sender_hex, recipient_hex = parsed
+
+        assignment = AverageDualAssignment(
+            job_index=idx,
+            type_key=key_str,
+            sender_hex=sender_hex,
+            recipient_hex=recipient_hex,
+            value=None,
+            source="missing",
+        )
+
         if key is None:
             missing_records.append((idx, None))
+            assignments.append(assignment)
             continue
-        value = table.get(str(key))
-        if value is None:
-            missing_records.append((idx, str(key)))
+
+        value = table_dict.get(key_str)
+        if value is not None:
+            value = float(value)
+            sp[idx] = value
+            assignment.value = value
+            assignment.source = "history"
+            assignments.append(assignment)
             continue
-        sp[idx] = float(value)
+
+        if missing == "neighbor" and sender_hex and recipient_hex:
+            neighbor_value, source_pair, radius = _find_neighbor_candidate(
+                (sender_hex, recipient_hex), neighbor_index
+            )
+            if neighbor_value is not None and source_pair is not None and radius is not None:
+                sp[idx] = neighbor_value
+                assignment.value = neighbor_value
+                assignment.source = "neighbor"
+                assignment.neighbor_radius = radius
+                assignment.neighbor_source_type = str(source_pair)
+                table_dict[key_str] = neighbor_value
+                neighbor_index[(sender_hex, recipient_hex)] = neighbor_value
+                assignments.append(assignment)
+                continue
+
+        missing_records.append((idx, key_str))
+        assignments.append(assignment)
 
     if missing_records:
-        if missing == "hd":
+        effective_policy = missing
+        if missing == "neighbor":
+            # After exhausting neighbours, revert to HD fallback for safety.
+            effective_policy = "hd"
+
+        if effective_policy == "hd":
             for idx, _label in missing_records:
                 sp[idx] = float(duals[idx])
+                assignments[idx].value = float(duals[idx])
+                assignments[idx].source = "hd"
         elif missing == "zero":
             for idx, _label in missing_records:
                 sp[idx] = 0.0
+                assignments[idx].value = 0.0
+                assignments[idx].source = "zero"
         elif missing == "error":
             raise AverageDualError(
                 "Missing average-dual entries for job types: "
@@ -139,7 +293,120 @@ def _resolve_average_duals(
         else:
             raise AverageDualError(f"Unknown missing-type policy '{missing}'")
 
-    return sp, missing_records
+    return sp, missing_records, assignments, table_dict
+
+
+def _derive_ad_stem(ad_path: str) -> tuple[Path, str]:
+    path = Path(ad_path)
+    stem = path.stem
+    if stem.endswith("_lookup"):
+        stem = stem[: -len("_lookup")]
+    return path.parent, stem
+
+
+def _write_dict_rows(path: Path, fieldnames: Sequence[str], rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _export_runtime_ad_updates(
+    *,
+    ad_path: str | None,
+    jobs: Sequence[Job],
+    assignments: Sequence[AverageDualAssignment],
+    table: Mapping[str, float],
+) -> None:
+    if not ad_path:
+        return
+
+    neighbor_assignments = [a for a in assignments if a.source == "neighbor" and a.type_key]
+    if not neighbor_assignments:
+        return
+
+    base_dir, stem = _derive_ad_stem(ad_path)
+
+    lookup_path = base_dir / f"{stem}_lookup_runtime.csv"
+    summary_path = base_dir / f"{stem}_summary_runtime.csv"
+    full_path = base_dir / f"{stem}_full_runtime.csv"
+
+    sorted_items = sorted(table.items(), key=lambda item: item[0])
+    lookup_rows = [
+        {"type": key, "mean_dual": float(value)} for key, value in sorted_items
+    ]
+    _write_dict_rows(lookup_path, ["type", "mean_dual"], lookup_rows)
+
+    neighbor_types = {assignment.type_key for assignment in neighbor_assignments if assignment.type_key}
+    summary_rows = []
+    for key, value in sorted_items:
+        pair = _parse_hex_pair(key)
+        if pair is None:
+            continue
+        summary_rows.append(
+            {
+                "sender_hex": pair[0],
+                "recipient_hex": pair[1],
+                "mean_dual": float(value),
+                "source": "neighbor" if key in neighbor_types else "history",
+                "type": key,
+            }
+        )
+    _write_dict_rows(
+        summary_path,
+        ["sender_hex", "recipient_hex", "mean_dual", "source", "type"],
+        summary_rows,
+    )
+
+    full_rows = []
+    for assignment in assignments:
+        job = jobs[assignment.job_index]
+        origin_lat, origin_lng = job.origin
+        dest_lat, dest_lng = job.dest
+        full_rows.append(
+            {
+                "job_index": assignment.job_index,
+                "timestamp": float(job.timestamp),
+                "sender_lat": float(origin_lat),
+                "sender_lng": float(origin_lng),
+                "recipient_lat": float(dest_lat),
+                "recipient_lng": float(dest_lng),
+                "type": assignment.type_key or "",
+                "mean_dual": assignment.value if assignment.value is not None else "",
+                "source": assignment.source,
+                "neighbor_radius": assignment.neighbor_radius
+                if assignment.neighbor_radius is not None
+                else "",
+                "neighbor_source": assignment.neighbor_source_type or "",
+                "sender_hex": assignment.sender_hex or "",
+                "recipient_hex": assignment.recipient_hex or "",
+            }
+        )
+    _write_dict_rows(
+        full_path,
+        [
+            "job_index",
+            "timestamp",
+            "sender_lat",
+            "sender_lng",
+            "recipient_lat",
+            "recipient_lng",
+            "type",
+            "mean_dual",
+            "source",
+            "neighbor_radius",
+            "neighbor_source",
+            "sender_hex",
+            "recipient_hex",
+        ],
+        full_rows,
+    )
+
+    print(
+        "[ad] Wrote runtime average-dual updates:"  # pragma: no cover - user feedback
+        f" lookup={lookup_path}, summary={summary_path}, full={full_path}"
+    )
 
 
 def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
@@ -232,7 +499,8 @@ def run_instance(
     tie_breaker: str = "distance",
     ad_duals: Mapping[str, float] | None = None,
     ad_mapping: Callable[[Job], str | None] | None = None,
-    ad_missing: str = "hd",
+    ad_missing: str = "neighbor",
+    ad_duals_path: str | None = None,
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
@@ -250,9 +518,11 @@ def run_instance(
     When ``"ad"`` is present in ``shadows`` the optional ``ad_duals`` table and
     ``ad_mapping`` callable describe the average-dual family. Every job is mapped
     to a type key and the mean dual for that type is retrieved from the table.
-    Missing types fall back to HD duals when ``ad_missing="hd"`` (the default),
-    are zeroed with ``ad_missing="zero"``, or raise an :class:`AverageDualError`
-    when ``ad_missing="error"``.
+    Missing types first attempt neighbour backfilling when
+    ``ad_missing="neighbor"`` (the default), then fall back to HD duals if
+    necessary. Alternative policies preserve the legacy behaviour:
+    ``ad_missing="hd"`` substitutes hindsight duals, ``ad_missing="zero"``
+    injects zeros, and ``ad_missing="error"`` raises :class:`AverageDualError`.
     """
 
     jobs = list(jobs)
@@ -313,13 +583,20 @@ def run_instance(
                 raise AverageDualError(
                     "Average-dual shadows require both 'ad_duals' and 'ad_mapping'."
                 )
-            sp_base, missing_records = _resolve_average_duals(
+            sp_base, missing_records, assignments, updated_table = _resolve_average_duals(
                 jobs,
                 duals,
                 ad_duals,
                 ad_mapping,
                 missing=ad_missing,
             )
+            if ad_missing == "neighbor":
+                _export_runtime_ad_updates(
+                    ad_path=ad_duals_path,
+                    jobs=jobs,
+                    assignments=assignments,
+                    table=updated_table,
+                )
             if missing_records and print_table:
                 missing_labels = sorted(
                     {
@@ -581,7 +858,7 @@ def run_once(
     tie_breaker: str = "distance",
     ad_duals: Mapping[str, float] | None = None,
     ad_mapping: Callable[[Job], str | None] | None = None,
-    ad_missing: str = "hd",
+    ad_missing: str = "neighbor",
 ) -> dict:
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
@@ -618,7 +895,7 @@ def run_once(
     elif shadow == "ad":
         if ad_duals is None or ad_mapping is None:
             raise AverageDualError("Average-dual shadows require ad_duals/ad_mapping")
-        sp_base, _missing = _resolve_average_duals(
+        sp_base, _missing, _assignments, _table = _resolve_average_duals(
             jobs,
             duals,
             ad_duals,
@@ -860,11 +1137,12 @@ def main() -> None:
     )
     p.add_argument(
         "--ad_missing",
-        default="hd",
-        choices=["hd", "zero", "error"],
+        default="neighbor",
+        choices=["neighbor", "hd", "zero", "error"],
         help=(
             "Policy for jobs whose mapped type is absent in the average-dual table: "
-            "'hd' falls back to per-job HD duals, 'zero' uses 0, and 'error' aborts."
+            "'neighbor' searches outward for nearby hex pairs (then falls back to HD), "
+            "'hd' substitutes per-job HD duals, 'zero' uses 0, and 'error' aborts."
         ),
     )
     args = p.parse_args()
@@ -947,6 +1225,7 @@ def main() -> None:
         ad_duals=ad_table,
         ad_mapping=ad_mapper,
         ad_missing=args.ad_missing,
+        ad_duals_path=args.ad_duals,
     )
 
 

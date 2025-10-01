@@ -142,6 +142,7 @@ def _run_trials_for_config(
             ad_duals=ad_duals,
             ad_mapping=ad_mapping,
             ad_missing=ad_missing,
+            ad_duals_path=args.ad_duals,
         )
         for record in result["rows"]:
             enriched = dict(record)
@@ -235,8 +236,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--ad_missing",
-        default="error",
-        choices=["hd", "zero", "error"],
+        default="neighbor",
+        choices=["neighbor", "hd", "zero", "error"],
         help="Policy for handling jobs whose type is missing from the average-dual table.",
     )
 
