@@ -233,3 +233,13 @@ python -m ddp.scripts.plot_results --csv_full sweeps/n100_d1-10_opt_1d.csv --mod
 ```
 
 Use `--include_policies` (comma-separated `shadow+dispatch` keys) to restrict which policy curves are shown.
+
+For `ddp-shadow-sweep` runs saved via `--write_csv`, you can later inspect the gamma/tau trade-offs directly from the
+CSV without rerunning the simulations:
+
+```bash
+python -m ddp.scripts.plot_shadow_sweep --csv results/shadow_sweep.csv --x gamma --geometry plane --shadow pb --metric savings --out figs/plane_pb_gamma.png
+```
+
+Swap `--x tau` to draw tau along the x-axis, supply repeated `--geometry`/`--shadow` flags to compare curves, and add
+`--show` for an interactive window.
