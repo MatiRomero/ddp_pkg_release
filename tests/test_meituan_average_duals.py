@@ -1,3 +1,4 @@
+import os
 import pathlib
 import sys
 import tempfile
@@ -203,6 +204,7 @@ class MeituanAverageDualsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = pathlib.Path(tmpdir)
             cache_dir = tmp_path / "cache"
+            exports_dir = tmp_path / "data" / "average_duals"
 
             pipeline_result = PipelineResult(
                 target=target_df,
@@ -210,29 +212,34 @@ class MeituanAverageDualsTest(unittest.TestCase):
                 summary=summary_df,
             )
 
-            with mock.patch(
-                "ddp.scripts.meituan_average_duals.build_average_duals",
-                return_value=pipeline_result,
-            ) as build_mock:
-                exit_code = main(
-                    [
-                        "--day",
-                        "5",
-                        "--data-dir",
-                        str(tmp_path / "data"),
-                        "--cache-dir",
-                        str(cache_dir),
-                    ]
-                )
+            cwd = pathlib.Path.cwd()
+            try:
+                os.chdir(tmp_path)
+                with mock.patch(
+                    "ddp.scripts.meituan_average_duals.build_average_duals",
+                    return_value=pipeline_result,
+                ) as build_mock:
+                    exit_code = main(
+                        [
+                            "--day",
+                            "5",
+                            "--data-dir",
+                            str(tmp_path / "data"),
+                            "--cache-dir",
+                            str(cache_dir),
+                        ]
+                    )
+            finally:
+                os.chdir(cwd)
 
             self.assertEqual(exit_code, 0)
             build_mock.assert_called_once()
 
             stem = "meituan_ad_day5_d20_res8"
-            summary_path = cache_dir / f"{stem}_summary.csv"
-            ad_csv_path = cache_dir / f"{stem}_lookup.csv"
-            ad_npz_path = cache_dir / f"{stem}_lookup.npz"
-            target_path = cache_dir / f"{stem}_full.csv"
+            summary_path = exports_dir / f"{stem}_summary.csv"
+            ad_csv_path = exports_dir / f"{stem}_lookup.csv"
+            ad_npz_path = exports_dir / f"{stem}_lookup.npz"
+            target_path = exports_dir / f"{stem}_full.csv"
 
             self.assertTrue(summary_path.exists())
             self.assertTrue(ad_csv_path.exists())
