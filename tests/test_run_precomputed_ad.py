@@ -1,7 +1,9 @@
+import csv
+
 import numpy as np
 
 from ddp.model import Job
-from ddp.scripts.run import AverageDualError, _load_precomputed_ad_shadows
+from ddp.scripts.run import AverageDualError, _load_precomputed_ad_shadows, load_average_duals
 
 
 def _make_jobs(count: int) -> list[Job]:
@@ -40,3 +42,18 @@ def test_missing_entries_raise_error() -> None:
         assert "Missing average-dual values" in str(exc)
     else:  # pragma: no cover - defensive, should not happen
         raise AssertionError("Expected AverageDualError when entries are missing")
+
+
+def test_load_average_duals_from_job_aligned_csv(tmp_path) -> None:
+    csv_path = tmp_path / "job_duals.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["job_index", "mean_dual"])
+        writer.writerow(["2", "-1.0"])
+        writer.writerow(["0", "0.5"])
+        writer.writerow(["1", "1.25"])
+
+    duals = load_average_duals(str(csv_path))
+
+    assert isinstance(duals, np.ndarray)
+    np.testing.assert_allclose(duals, np.array([0.5, 1.25, -1.0], dtype=float))
