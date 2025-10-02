@@ -29,7 +29,7 @@ ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb
 # Evaluate average-dual (AD) shadows using a pre-computed per-job table
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
-  --ad_duals ad_runtime_values.csv
+  --ad_duals ad_runtime_values.csv --ad-mapping ddp.mappings.h3_pairs:job_mapping
 # Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
 # Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
@@ -51,15 +51,22 @@ python -m ddp.scripts.meituan_average_duals \
   --folium-map reports/meituan_day5_sender_coverage.html
 ```
 
-Average-dual (``ad``) shadows now expect a *pre-enriched* lookup that already
-stores the runtime value for every job in the provided instance. Pass either a
-NumPy array archive (``.npz`` with a single array) or a CSV file with two
-columns: ``job_index`` (0-based) and ``mean_dual``. Runtime mapping and fallback
-policies have been removed—the simulator simply reads the prepared values and
-uses them as-is. This keeps the dispatch evaluation focused on the supplied
-inputs and shifts any interpolation or neighbour search to the offline data
-pipeline. See [Average-dual pipeline overview](docs/average_dual_pipeline.md)
-for details on producing these per-job lookups.
+Average-dual (``ad``) shadows require a *pre-enriched* lookup aligned with the
+jobs under evaluation. Two formats are supported:
+
+* **Job-aligned tables** provide one value per job via ``.npz`` archives or CSV
+  files containing ``job_index``/``mean_dual`` columns. These load directly into
+  the simulator without additional configuration.
+* **Type-indexed tables** aggregate historical data by a serialized type string
+  (``type`` column in CSV files). Provide ``--ad-mapping module:function`` so the
+  runtime can map each job to the appropriate type before extracting its dual.
+
+Runtime fallback heuristics have been removed—the simulator now expects either a
+fully aligned array or a mapper-backed type lookup and uses those values as-is.
+This keeps the dispatch evaluation focused on the supplied inputs and shifts any
+interpolation or neighbour search to the offline data pipeline. See
+[Average-dual pipeline overview](docs/average_dual_pipeline.md) for details on
+producing both formats.
 
 ### Loading job instances from CSV files
 

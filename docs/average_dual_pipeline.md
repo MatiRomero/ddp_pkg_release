@@ -33,32 +33,22 @@ The inspection CLI (`ddp.scripts.average_duals`) resolves the same `module:calla
 
 ## 3. Building AD lookup tables
 
-After assigning types, aggregate HD rows into an average-dual table. Two storage formats are supported by `load_average_duals`:
+After assigning types, aggregate HD rows into an average-dual table. Three storage formats are supported by `load_average_duals`:
 
-* **NPZ archives** must contain parallel `types` and `mean_dual` (or `duals`) arrays. Each entry is coerced to `str` and mapped to `float` values.【F:src/ddp/scripts/run.py†L31-L52】
-* **Delimited/CSV files** must provide a header row with `type` and `mean_dual` (or `dual`) columns. Extra columns, such as the
-  `std_dev` summary emitted by `build_average_duals`, are ignored. Missing or invalid values raise
-  `ValueError`.【F:src/ddp/scripts/run.py†L54-L81】【F:src/ddp/scripts/build_average_duals.py†L88-L117】
+* **NPZ archives** must contain parallel `types` and `mean_dual` (or `duals`) arrays. Each entry is coerced to `str` and mapped to `float` values.【F:src/ddp/scripts/run.py†L31-L67】
+* **Type-indexed CSV/TSV files** must provide a header row with `type` and `mean_dual` (or `dual`/`ad_mean`) columns. Extra columns, such as the `std_dev` summary emitted by `build_average_duals`, are ignored. Missing or invalid values raise `ValueError`.【F:src/ddp/scripts/run.py†L69-L126】【F:src/ddp/scripts/build_average_duals.py†L88-L117】
+* **Job-aligned CSV/TSV files** list `job_index`/`mean_dual` pairs (any of `job_index` or `index` headers are accepted) and must contain exactly one value per job. Holes trigger a validation error so the runtime never interpolates.【F:src/ddp/scripts/run.py†L90-L123】
 
-The resulting dictionary maps type strings to mean duals and can be shared across experiments.
+The loader returns an `AverageDualTable` dataclass with a `format` discriminator plus optional `by_job` and `by_type` payloads. Pass `as_table=False` when legacy code expects the raw array/dictionary instead of the structured container.
 
 ## 4. Enriching jobs with runtime AD shadows
 
-Once the type-level means have been computed, transform them into a
-*job-aligned* lookup before running simulations. Join the aggregated values back
-onto the specific jobs you plan to simulate, producing either:
+Once the type-level means have been computed, you have two options when running simulations:
 
-* A NumPy array ordered by job index (`0..n-1`).
-* A CSV (or dictionary) mapping each `job_index` to its precomputed `mean_dual`.
+* Materialise a *job-aligned* lookup by joining the aggregated values back onto the specific jobs you plan to simulate. Tools such as `ddp.scripts.meituan_average_duals` perform this enrichment by matching sender/recipient hex pairs for each target day, applying any neighbour searches or smoothing offline, and saving the resulting per-job table. The CLI exports a `*_lookup.csv` with type-level means alongside a `*_full.csv` containing the ordered `(job_index, mean_dual)` pairs so downstream simulations can ingest the values directly.
+* Keep the type-indexed table and supply a mapper at runtime. `_load_precomputed_ad_shadows` accepts an `AverageDualTable` with only `by_type` populated plus a `Job -> type` callable. CLI entry points expose this as `--ad-mapping module:function`, ensuring jobs are converted to type strings before the lookup is resolved.
 
-Tools such as `ddp.scripts.meituan_average_duals` perform this enrichment by
-matching sender/recipient hex pairs for each target day, applying any neighbour
-searches or smoothing offline, and saving the resulting per-job table. The CLI
-exports a `*_lookup.csv` with type-level means alongside a `*_full.csv`
-containing the ordered `(job_index, mean_dual)` pairs so downstream simulations
-can choose the representation they require. The runtime script now expects this
-enriched artefact via `--ad_duals` and simply loads the values—no additional
-mapping or fallback policies are applied.
+Both approaches avoid runtime fallback heuristics: the simulator expects either an aligned array or a mapper-backed type lookup and uses those values as-is.
 
 ## Putting it all together
 
@@ -66,7 +56,7 @@ mapping or fallback policies are applied.
 2. **Define or adapt a type mapper** that converts `Job` objects into type strings, possibly by wrapping a coordinate-based helper like the uniform grid.
 3. **Aggregate by type** to compute mean duals, saving the lookup as an NPZ (`types`, `mean_dual`) or CSV (`type`, `mean_dual`, `std_dev`).
 4. **Enrich the target jobs** with those means, materialising a job-aligned lookup (e.g. `job_index,mean_dual`).
-5. **Run experiments** with `python -m ddp.scripts.run --shadows ad --ad_duals path/to/job_level_lookup` so AD shadows use the prepared values directly.
+5. **Run experiments** with either a job-aligned table (`python -m ddp.scripts.run --shadows ad --ad_duals path/to/job_level_lookup`) or a type-indexed table plus mapper (`python -m ddp.scripts.run --shadows ad --ad_duals path/to/type_lookup.csv --ad-mapping module:function`).
 
 This pipeline keeps HD sampling, type assignment, and runtime evaluation decoupled, making it straightforward to iterate on new mappers or dataset slices without modifying the simulation logic.
 

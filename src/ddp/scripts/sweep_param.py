@@ -6,12 +6,17 @@ import argparse
 import csv
 import os
 import time
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Callable, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
 from ddp.model import Job, generate_jobs
-from ddp.scripts.run import load_average_duals, run_instance
+from ddp.scripts.run import (
+    AverageDualTable,
+    load_average_dual_mapper,
+    load_average_duals,
+    run_instance,
+)
 
 try:  # pragma: no cover - tqdm is optional at runtime
     from tqdm import tqdm
@@ -96,7 +101,12 @@ def _run_trials_for_config(
     dispatches: list[str],
     desc: str | None,
     extra_meta: dict[str, float | int | str | None] | None,
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None,
+    ad_mapper: Callable[[Job], str | None] | None,
 ) -> Iterator[dict]:
     """Yield rows for ``args.trials`` experiments at a given ``(n, d)`` setting."""
 
@@ -134,6 +144,7 @@ def _run_trials_for_config(
             return_details=False,
             print_matches=False,
             ad_duals=ad_duals,
+            ad_mapper=ad_mapper,
         )
         for record in result["rows"]:
             enriched = dict(record)
@@ -219,6 +230,12 @@ def main() -> None:
             "Path to an average-dual table (.npz or CSV). Required when --shadows includes 'ad'."
         ),
     )
+    parser.add_argument(
+        "--ad-mapping",
+        help=(
+            "Module:function resolving to an average-dual mapper for type-indexed tables."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -235,9 +252,27 @@ def main() -> None:
     if not dispatches:
         parser.error("No valid dispatch policies supplied via --dispatch")
 
-    ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
-    if "ad" in shadows and ad_table is None:
-        parser.error("--shadows includes 'ad' so --ad_duals must be provided")
+    ad_table: AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray | None = (
+        load_average_duals(args.ad_duals) if args.ad_duals else None
+    )
+    ad_mapper: Callable[[Job], str | None] | None = None
+    if "ad" in shadows:
+        if ad_table is None:
+            parser.error("--shadows includes 'ad' so --ad_duals must be provided")
+        if args.ad_mapping:
+            try:
+                ad_mapper = load_average_dual_mapper(args.ad_mapping)
+            except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
+                parser.error(f"failed to resolve --ad-mapping: {exc}")
+        if (
+            isinstance(ad_table, AverageDualTable)
+            and ad_table.by_job is None
+            and ad_table.by_type is not None
+            and ad_mapper is None
+        ):
+            parser.error("type-indexed average-dual tables require --ad-mapping")
+    elif args.ad_mapping:
+        parser.error("--ad-mapping can only be used when --shadows includes 'ad'")
 
     if args.save_csv:
         if os.path.isabs(args.save_csv) or not args.outdir:
@@ -314,6 +349,7 @@ def main() -> None:
                     desc=f"{args.param}={value}",
                     extra_meta=extra_meta,
                     ad_duals=ad_table,
+                    ad_mapper=ad_mapper,
                 ):
                     record_row(row)
         else:
@@ -323,17 +359,18 @@ def main() -> None:
                 "n_fixed": args.n,
                 "d_fixed": args.d,
             }
-                for row in _run_trials_for_config(
-                    n=args.n,
-                    d=args.d,
-                    args=args,
-                    shadows=shadows,
-                    dispatches=dispatches,
-                    desc=f"n={args.n}, d={args.d}",
-                    extra_meta=extra_meta,
-                    ad_duals=ad_table,
-                ):
-                    record_row(row)
+            for row in _run_trials_for_config(
+                n=args.n,
+                d=args.d,
+                args=args,
+                shadows=shadows,
+                dispatches=dispatches,
+                desc=f"n={args.n}, d={args.d}",
+                extra_meta=extra_meta,
+                ad_duals=ad_table,
+                ad_mapper=ad_mapper,
+            ):
+                record_row(row)
     finally:
         if csv_handle is not None:
             csv_handle.close()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -13,10 +13,12 @@ from ddp.engine.sim import simulate
 from ddp.model import Job
 from ddp.scripts.run import (
     AverageDualError,
+    AverageDualTable,
     _load_precomputed_ad_shadows,
     make_local_score,
     make_weight_fn,
     make_weight_fn_latest_shadow,
+    load_average_dual_mapper,
     load_average_duals,
     reward_fn,
 )
@@ -51,7 +53,12 @@ def _shadow_vector(
     jobs: Sequence[Job],
     time_window,
     *,
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None,
+    ad_mapper: Callable[[Job], str | None] | None,
 ) -> np.ndarray:
     jobs_list = list(jobs)
     n = len(jobs_list)
@@ -67,7 +74,7 @@ def _shadow_vector(
         if ad_duals is None:
             raise SystemExit("AD shadows require --ad_duals")
         try:
-            return _load_precomputed_ad_shadows(jobs_list, ad_duals)
+            return _load_precomputed_ad_shadows(jobs_list, ad_duals, mapper=ad_mapper)
         except AverageDualError as exc:
             raise SystemExit(str(exc)) from exc
     raise SystemExit(f"Unsupported shadow '{label}'.")
@@ -180,6 +187,12 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
+        "--ad-mapping",
+        help=(
+            "Module:function string resolving to an average-dual mapper used with type tables."
+        ),
+    )
+    parser.add_argument(
         "--plot",
         action="store_true",
         help="Plot the size of the available set over the event timeline.",
@@ -202,14 +215,23 @@ def main(argv: list[str] | None = None) -> None:
     time_window = float(args.d)
 
     ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
+    ad_mapper: Callable[[Job], str | None] | None = None
+    if args.ad_mapping:
+        try:
+            ad_mapper = load_average_dual_mapper(args.ad_mapping)
+        except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
+            parser.error(f"failed to resolve --ad-mapping: {exc}")
     if args.shadow == "ad" and ad_table is None:
         raise SystemExit("--shadow=ad requires --ad_duals")
+    if args.shadow != "ad" and ad_mapper is not None:
+        parser.error("--ad-mapping can only be used with --shadow=ad")
 
     base_shadow = _shadow_vector(
         args.shadow,
         jobs,
         time_window,
         ad_duals=ad_table,
+        ad_mapper=ad_mapper,
     )
 
     decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = _prepare_dispatch(

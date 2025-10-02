@@ -17,6 +17,8 @@ from tqdm.auto import tqdm
 from ddp.model import Job, generate_jobs
 from ddp.scripts.run import (
     AverageDualError,
+    AverageDualTable,
+    load_average_dual_mapper,
     load_average_duals,
     run_instance,
 )
@@ -181,7 +183,12 @@ def _run_sweep_from_trial_jobs(
     tau_values: Sequence[float],
     geometries: Sequence[GeometryPreset],
     shadows: Sequence[str],
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None,
+    ad_mapper: Callable[[Job], str | None] | None,
     trial_jobs: Sequence[tuple[int, Mapping[str, Sequence[Job]]]],
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
@@ -241,13 +248,14 @@ def _run_sweep_from_trial_jobs(
                                 seed=seed,
                                 with_opt=False,
                                 save_csv="",
-                            print_table=False,
-                            return_details=False,
-                            print_matches=False,
-                            gamma=float(gamma),
-                            tau=float(tau),
-                            ad_duals=ad_duals,
-                        )
+                                print_table=False,
+                                return_details=False,
+                                print_matches=False,
+                                gamma=float(gamma),
+                                tau=float(tau),
+                                ad_duals=ad_duals,
+                                ad_mapper=ad_mapper,
+                            )
                             row = result["rows"][0]
                             metric_value = _extract_metric(row, metric)
                             if metric_value is not None:
@@ -300,7 +308,12 @@ def _run_sweep(
     tau_values: Sequence[float],
     geometries: Sequence[GeometryPreset],
     shadows: Sequence[str],
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None,
+    ad_mapper: Callable[[Job], str | None] | None,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Generate synthetic trials then delegate to :func:`_run_sweep_from_trial_jobs`."""
@@ -315,6 +328,7 @@ def _run_sweep(
         geometries=geometries,
         shadows=shadows,
         ad_duals=ad_duals,
+        ad_mapper=ad_mapper,
         trial_jobs=trial_jobs,
         progress=progress,
     )
@@ -483,6 +497,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ad-mapping",
+        default="",
+        help=(
+            "Module:function resolving to an average-dual mapper for type-indexed tables."
+        ),
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Display the generated heatmaps interactively",
@@ -543,7 +564,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not shadows:
         parser.error("at least one shadow family must be selected")
 
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None = None
+    ad_duals: AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray | None = None
+    ad_mapper: Callable[[Job], str | None] | None = None
     if "ad" in shadows:
         if not args.ad_duals:
             parser.error("--ad-duals is required when evaluating AD shadows")
@@ -551,6 +573,20 @@ def main(argv: Sequence[str] | None = None) -> None:
             ad_duals = load_average_duals(args.ad_duals)
         except (OSError, ValueError) as exc:
             parser.error(f"failed to load --ad-duals: {exc}")
+        if args.ad_mapping:
+            try:
+                ad_mapper = load_average_dual_mapper(args.ad_mapping)
+            except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
+                parser.error(f"failed to resolve --ad-mapping: {exc}")
+        if (
+            isinstance(ad_duals, AverageDualTable)
+            and ad_duals.by_job is None
+            and ad_duals.by_type is not None
+            and ad_mapper is None
+        ):
+            parser.error("type-indexed average-dual tables require --ad-mapping")
+    elif args.ad_mapping:
+        parser.error("--ad-mapping can only be used when evaluating AD shadows")
 
     try:
         heatmap, records, best_entries = _run_sweep(
@@ -560,12 +596,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             seed0=args.seed0,
             dispatch=args.dispatch,
             metric=args.metric,
-        gamma_values=gamma_values,
-        tau_values=tau_values,
-        geometries=geometries,
-        shadows=shadows,
-        ad_duals=ad_duals,
-    )
+            gamma_values=gamma_values,
+            tau_values=tau_values,
+            geometries=geometries,
+            shadows=shadows,
+            ad_duals=ad_duals,
+            ad_mapper=ad_mapper,
+        )
     except AverageDualError as exc:
         parser.error(str(exc))
 

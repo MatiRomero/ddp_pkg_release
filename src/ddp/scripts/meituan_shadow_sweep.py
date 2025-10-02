@@ -5,13 +5,18 @@ from __future__ import annotations
 import argparse
 import glob
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 
 from ddp.model import Job
 from ddp.scripts.csv_loader import load_jobs_from_csv
-from ddp.scripts.run import AverageDualError, load_average_duals
+from ddp.scripts.run import (
+    AverageDualError,
+    AverageDualTable,
+    load_average_dual_mapper,
+    load_average_duals,
+)
 from ddp.scripts.shadow_sweep import (
     ALLOWED_METRICS,
     ALL_SHADOWS,
@@ -136,6 +141,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ad-mapping",
+        default="",
+        help=(
+            "Module:function resolving to an average-dual mapper for type-indexed tables."
+        ),
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Display the generated heatmaps interactively",
@@ -190,7 +202,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not jobs_paths:
         parser.error("no CSV files matched --jobs-csv")
 
-    ad_duals: Mapping[object, float] | Sequence[float] | None = None
+    ad_duals: AverageDualTable | Mapping[object, float] | Sequence[float] | None = None
+    ad_mapper: Callable[[Job], str | None] | None = None
     if "ad" in shadows:
         if not args.ad_duals:
             parser.error("--ad-duals is required when evaluating AD shadows")
@@ -198,6 +211,20 @@ def main(argv: Sequence[str] | None = None) -> None:
             ad_duals = load_average_duals(args.ad_duals)
         except (OSError, ValueError) as exc:
             parser.error(f"failed to load --ad-duals: {exc}")
+        if args.ad_mapping:
+            try:
+                ad_mapper = load_average_dual_mapper(args.ad_mapping)
+            except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
+                parser.error(f"failed to resolve --ad-mapping: {exc}")
+        if (
+            isinstance(ad_duals, AverageDualTable)
+            and ad_duals.by_job is None
+            and ad_duals.by_type is not None
+            and ad_mapper is None
+        ):
+            parser.error("type-indexed average-dual tables require --ad-mapping")
+    elif args.ad_mapping:
+        parser.error("--ad-mapping can only be used when --shadows includes 'ad'")
 
     trial_jobs: list[tuple[int, dict[str, Sequence[Job]]]] = []
     for index, csv_path in enumerate(jobs_paths):
@@ -218,6 +245,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             geometries=[_DATASET_GEOMETRY],
             shadows=shadows,
             ad_duals=ad_duals,
+            ad_mapper=ad_mapper,
             trial_jobs=trial_jobs,
             progress=not args.no_progress,
         )
