@@ -69,6 +69,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional path to save the rendered figure",
     )
     parser.add_argument(
+        "--best-out",
+        dest="best_out",
+        default="",
+        help=(
+            "Optional path where the best (gamma, tau) summary CSV should be "
+            "written (defaults to <csv>_best.csv)"
+        ),
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Display the figure interactively",
@@ -130,6 +139,96 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     if df.empty:
         raise SystemExit("No rows remain after applying the requested filters")
+
+    df = df.copy()
+
+    mean_numeric = pd.to_numeric(df["mean"], errors="coerce")
+    if mean_numeric.isna().all():
+        raise SystemExit("Unable to parse numeric mean values from the CSV")
+
+    best_group_candidates = [
+        column
+        for column in ("geometry", "d", "resolution", "dispatch", "shadow")
+        if column in df.columns
+    ]
+
+    best_rows: list[dict[str, object]] = []
+    if best_group_candidates:
+        grouped_best = df.groupby(best_group_candidates, dropna=False)
+    else:
+        grouped_best = [((), df)]
+
+    for key, group_df in grouped_best:
+        if not isinstance(key, tuple):
+            key = (key,)
+
+        group_mean = mean_numeric.loc[group_df.index]
+        if group_mean.notna().sum() == 0:
+            group_repr = ", ".join(
+                f"{column}={value}" for column, value in zip(best_group_candidates, key)
+            ) or "overall"
+            raise SystemExit(
+                "Unable to determine best gamma/tau because all mean values are NaN "
+                f"for group {group_repr}"
+            )
+
+        best_index = group_mean.idxmax()
+        best_entry = df.loc[best_index]
+
+        record: dict[str, object] = {
+            "geometry": "",
+            "d": "",
+            "resolution": "",
+            "dispatch": "",
+            "shadow": "",
+            "best_gamma": best_entry.get("gamma", ""),
+            "best_tau": best_entry.get("tau", ""),
+            "best_mean": group_mean.loc[best_index],
+        }
+
+        for column, value in zip(best_group_candidates, key):
+            if pd.isna(value):
+                record[column] = ""
+            else:
+                record[column] = value
+
+        label_parts = [
+            f"{column}={record[column]}"
+            for column in best_group_candidates
+            if record[column] != ""
+        ]
+        label = ", ".join(label_parts) if label_parts else "overall"
+        message = (
+            f"Best for {label}: gamma={record['best_gamma']}, "
+            f"tau={record['best_tau']}, mean={record['best_mean']}"
+        )
+        print(message)
+
+        best_rows.append(record)
+
+    best_columns = [
+        "geometry",
+        "d",
+        "resolution",
+        "dispatch",
+        "shadow",
+        "best_gamma",
+        "best_tau",
+        "best_mean",
+    ]
+
+    best_df = pd.DataFrame(best_rows, columns=best_columns)
+
+    best_out_arg = args.best_out.strip()
+    if best_out_arg:
+        best_out_path = Path(best_out_arg)
+    else:
+        best_out_path = csv_path.with_name(f"{csv_path.stem}_best.csv")
+
+    best_out_path.parent.mkdir(parents=True, exist_ok=True)
+    best_df.sort_values(best_group_candidates or ["geometry"], inplace=True)
+    best_df.to_csv(best_out_path, index=False)
+    print(f"Best summary written to {best_out_path}")
 
     x_col = args.x
     plot_columns = [

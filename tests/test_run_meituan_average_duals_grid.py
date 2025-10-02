@@ -45,6 +45,7 @@ def test_default_export_templates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         return SimpleNamespace(
             summary=_FakeFrame("summary"),
             lookup=_FakeFrame("lookup"),
+            job_lookup=_FakeFrame("job"),
         )
 
     def _fake_save_summary_map(summary, path):  # type: ignore[no-untyped-def]
@@ -52,6 +53,11 @@ def test_default_export_templates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(runner, "build_average_duals", _fake_build_average_duals)
     monkeypatch.setattr(runner, "save_summary_map", _fake_save_summary_map)
+    monkeypatch.setattr(
+        runner,
+        "export_job_aligned_duals_csv",
+        lambda job_lookup, path: Path(path).write_text("job"),
+    )
 
     working_dir = tmp_path / "workspace"
     working_dir.mkdir()
@@ -84,6 +90,8 @@ def test_default_export_templates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
     summary_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_summary.csv"
     lookup_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_lookup.csv"
+    job_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_full.csv"
 
     assert summary_path.read_text() == "summary"
     assert lookup_path.read_text() == "lookup"
+    assert job_path.read_text() == "job"
