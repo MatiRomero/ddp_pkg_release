@@ -32,6 +32,7 @@ from ddp.scripts.meituan_average_duals import (  # noqa: E402
     ensure_hd_cache,
     main,
     export_average_duals_csv,
+    export_job_aligned_duals_csv,
     PipelineResult,
     _neighbor_pairs,
     match_average_duals,
@@ -111,14 +112,28 @@ class MeituanAverageDualsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = pathlib.Path(tmpdir)
             csv_path = tmpdir_path / "ad_lookup.csv"
+            job_csv_path = tmpdir_path / "ad_job_lookup.csv"
 
             export_average_duals_csv(summary, csv_path)
+            export_job_aligned_duals_csv(
+                pd.DataFrame(
+                    [
+                        {"job_index": 0, "mean_dual": summary.iloc[0]["mean_dual"]},
+                        {"job_index": 1, "mean_dual": summary.iloc[1]["mean_dual"]},
+                    ]
+                ),
+                job_csv_path,
+            )
 
             expected = {row.type: float(row.mean_dual) for row in summary.itertuples(index=False)}
 
             csv_loaded = load_average_duals(str(csv_path))
 
             self.assertEqual(csv_loaded, expected)
+
+            job_loaded = pd.read_csv(job_csv_path)
+            self.assertEqual(list(job_loaded.columns), ["job_index", "mean_dual"])
+            self.assertListEqual(job_loaded["job_index"].tolist(), [0, 1])
 
     def test_neighbor_search_and_zero_fallback(self) -> None:
         mapper = make_mapping(5)
@@ -183,6 +198,12 @@ class MeituanAverageDualsTest(unittest.TestCase):
             ],
             columns=["type", "mean_dual"],
         )
+        job_lookup_df = pd.DataFrame(
+            [
+                {"job_index": 0, "mean_dual": 1.5},
+            ],
+            columns=["job_index", "mean_dual"],
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = pathlib.Path(tmpdir)
@@ -192,7 +213,9 @@ class MeituanAverageDualsTest(unittest.TestCase):
             pipeline_result = PipelineResult(
                 summary=summary_df,
                 lookup=lookup_df,
+                job_lookup=job_lookup_df,
             )
+            self.assertIs(pipeline_result.job_lookup, job_lookup_df)
 
             cwd = pathlib.Path.cwd()
             try:
@@ -220,9 +243,11 @@ class MeituanAverageDualsTest(unittest.TestCase):
             stem = "meituan_ad_day5_d20_res8"
             summary_path = exports_dir / f"{stem}_summary.csv"
             ad_csv_path = exports_dir / f"{stem}_lookup.csv"
+            ad_job_csv_path = exports_dir / f"{stem}_full.csv"
 
             self.assertTrue(summary_path.exists())
             self.assertTrue(ad_csv_path.exists())
+            self.assertTrue(ad_job_csv_path.exists())
 
             summary_loaded = pd.read_csv(summary_path)
             pd.testing.assert_frame_equal(summary_loaded, summary_df, check_dtype=False)
@@ -231,6 +256,14 @@ class MeituanAverageDualsTest(unittest.TestCase):
             self.assertEqual(list(ad_lookup_loaded.columns), ["type", "mean_dual"])
             self.assertEqual(ad_lookup_loaded.iloc[0]["type"], "('abc', 'def')")
             self.assertAlmostEqual(ad_lookup_loaded.iloc[0]["mean_dual"], 1.5)
+
+            ad_job_lookup_loaded = pd.read_csv(ad_job_csv_path)
+            self.assertEqual(list(ad_job_lookup_loaded.columns), ["job_index", "mean_dual"])
+            pd.testing.assert_frame_equal(
+                ad_job_lookup_loaded,
+                job_lookup_df,
+                check_dtype=False,
+            )
 
     def test_ensure_hd_cache_uses_deadline_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

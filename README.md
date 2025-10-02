@@ -103,6 +103,9 @@ illustrates a typical invocation. Key options include:
   target-day `(sender_hex, recipient_hex)` pair. Unmatched jobs are assigned a
   zero mean dual after neighbour search, ensuring simulations can proceed
   without extra fallbacks.
+- `--export-ad-job-csv`: CSV path for the job-aligned lookup (`job_index,
+  mean_dual`) that matches the target day's ordering so the runtime can ingest
+  the values directly.
 - `--folium-map`: optional HTML map visualising sender coverage at the chosen
   resolution.
 
@@ -110,7 +113,10 @@ Snapshots are discovered by combining `--data-dir` with `--jobs-pattern`
 (defaults to `meituan_city_lunchtime_plat10301330_day{day}.csv`). Per-day HD
 dual CSVs are cached under `--cache-dir` (`data/hd_cache` by default) using
 filenames of the form `day{day}_d{deadline}_hd.csv` so multiple LP deadlines can
-coexist; pass `--force` to recompute them.
+coexist; pass `--force` to recompute them. When no explicit export paths are
+supplied, the CLI now writes both `*_lookup.csv` (type-level means) and
+`*_full.csv` (job-level lookup) files under `--export-dir` so downstream
+workflows can reuse either artefact immediately.
 
 Example end-to-end run on the bundled Meituan sample:
 
