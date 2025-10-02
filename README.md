@@ -21,6 +21,8 @@ ddp-mwe02
 ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
 # Batch-convert the Meituan lunchtime CSV dumps into .npz archives and sweep d
 python scripts/run_meituan_sweep.py
+# Merge per-day policy runs with their AD counterparts
+python scripts/batch_merge_meituan.py
 # Load jobs straight from a Meituan-style CSV (see notes below)
 python -m ddp.scripts.run --jobs-csv data/meituan_sample.csv --d 3 \
   --export-npz meituan_sample.npz --save_csv run_from_csv.csv
