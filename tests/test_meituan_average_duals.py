@@ -15,8 +15,6 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - handled via skip
     h3 = None  # type: ignore[assignment]
 
-import numpy as np
-
 H3_AVAILABLE = h3 is not None and (
     hasattr(h3, "geo_to_h3") or hasattr(h3, "latlng_to_cell")
 )
@@ -34,7 +32,6 @@ from ddp.scripts.meituan_average_duals import (  # noqa: E402
     ensure_hd_cache,
     main,
     export_average_duals_csv,
-    export_average_duals_npz,
     PipelineResult,
     _neighbor_pairs,
     match_average_duals,
@@ -114,20 +111,16 @@ class MeituanAverageDualsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = pathlib.Path(tmpdir)
             csv_path = tmpdir_path / "ad_lookup.csv"
-            npz_path = tmpdir_path / "ad_lookup.npz"
 
             export_average_duals_csv(summary, csv_path)
-            export_average_duals_npz(summary, npz_path)
 
             expected = {row.type: float(row.mean_dual) for row in summary.itertuples(index=False)}
 
             csv_loaded = load_average_duals(str(csv_path))
-            npz_loaded = load_average_duals(str(npz_path))
 
             self.assertEqual(csv_loaded, expected)
-            self.assertEqual(npz_loaded, expected)
 
-    def test_neighbor_fallback_and_missing_policy(self) -> None:
+    def test_neighbor_search_and_zero_fallback(self) -> None:
         mapper = make_mapping(5)
         base_sender, base_recipient = mapper(39.90, 116.40, 39.92, 116.42)
         neighbor_sender = next(iter(_neighbor_pairs(base_sender, 1) - {base_sender}))
@@ -163,22 +156,12 @@ class MeituanAverageDualsTest(unittest.TestCase):
             target,
             summary,
             neighbor_radius=1,
-            missing_policy="hd",
         )
 
         self.assertEqual(enriched.loc[0, "ad_source"], "neighbor")
         self.assertEqual(enriched.loc[0, "ad_mean"], 3.5)
-        self.assertEqual(enriched.loc[1, "ad_source"], "hd_fallback")
-        self.assertEqual(enriched.loc[1, "ad_mean"], 5.0)
-
-        zeroed = match_average_duals(
-            target.iloc[[1]],
-            summary,
-            neighbor_radius=0,
-            missing_policy="zero",
-        )
-        self.assertEqual(zeroed.iloc[0]["ad_source"], "zero_fallback")
-        self.assertEqual(zeroed.iloc[0]["ad_mean"], 0.0)
+        self.assertEqual(enriched.loc[1, "ad_source"], "zero_fallback")
+        self.assertEqual(enriched.loc[1, "ad_mean"], 0.0)
 
     def test_main_writes_default_exports(self) -> None:
         summary_df = pd.DataFrame(
@@ -194,12 +177,12 @@ class MeituanAverageDualsTest(unittest.TestCase):
             ],
             columns=["sender_hex", "recipient_hex", "type", "mean_dual", "std_dual", "count"],
         )
-        target_df = pd.DataFrame([
-            {"day": 5, "job_index": 0, "ad_mean": 1.5},
-        ])
-        history_df = pd.DataFrame([
-            {"day": 4, "job_index": 0, "hindsight_dual": 2.0},
-        ])
+        lookup_df = pd.DataFrame(
+            [
+                {"type": "('abc', 'def')", "mean_dual": 1.5},
+            ],
+            columns=["type", "mean_dual"],
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = pathlib.Path(tmpdir)
@@ -207,9 +190,8 @@ class MeituanAverageDualsTest(unittest.TestCase):
             exports_dir = tmp_path / "data" / "average_duals"
 
             pipeline_result = PipelineResult(
-                target=target_df,
-                history=history_df,
                 summary=summary_df,
+                lookup=lookup_df,
             )
 
             cwd = pathlib.Path.cwd()
@@ -238,28 +220,17 @@ class MeituanAverageDualsTest(unittest.TestCase):
             stem = "meituan_ad_day5_d20_res8"
             summary_path = exports_dir / f"{stem}_summary.csv"
             ad_csv_path = exports_dir / f"{stem}_lookup.csv"
-            ad_npz_path = exports_dir / f"{stem}_lookup.npz"
-            target_path = exports_dir / f"{stem}_full.csv"
 
             self.assertTrue(summary_path.exists())
             self.assertTrue(ad_csv_path.exists())
-            self.assertTrue(ad_npz_path.exists())
-            self.assertTrue(target_path.exists())
 
             summary_loaded = pd.read_csv(summary_path)
             pd.testing.assert_frame_equal(summary_loaded, summary_df, check_dtype=False)
-
-            target_loaded = pd.read_csv(target_path)
-            pd.testing.assert_frame_equal(target_loaded, target_df, check_dtype=False)
 
             ad_lookup_loaded = pd.read_csv(ad_csv_path)
             self.assertEqual(list(ad_lookup_loaded.columns), ["type", "mean_dual"])
             self.assertEqual(ad_lookup_loaded.iloc[0]["type"], "('abc', 'def')")
             self.assertAlmostEqual(ad_lookup_loaded.iloc[0]["mean_dual"], 1.5)
-
-            with np.load(ad_npz_path) as npz:
-                self.assertEqual(npz["types"].tolist(), ["('abc', 'def')"])
-                self.assertTrue(np.allclose(npz["mean_dual"], np.array([1.5])))
 
     def test_ensure_hd_cache_uses_deadline_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

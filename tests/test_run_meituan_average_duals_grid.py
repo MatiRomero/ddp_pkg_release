@@ -44,7 +44,7 @@ def test_default_export_templates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         created["call"] = kwargs  # ensure the fake was invoked
         return SimpleNamespace(
             summary=_FakeFrame("summary"),
-            target=_FakeFrame("target"),
+            lookup=_FakeFrame("lookup"),
         )
 
     def _fake_save_summary_map(summary, path):  # type: ignore[no-untyped-def]
@@ -77,12 +77,13 @@ def test_default_export_templates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     assert exit_code == 0
     assert "call" in created
+    assert "missing_policy" not in created["call"]
 
     expected_stem = runner.DEFAULT_EXPORT_STEM.format(
         day=1, d=runner._format_deadline(10), r=7
     )
     summary_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_summary.csv"
-    target_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_full.csv"
+    lookup_path = working_dir / runner.DEFAULT_EXPORT_BASE / f"{expected_stem}_lookup.csv"
 
     assert summary_path.read_text() == "summary"
-    assert target_path.read_text() == "target"
+    assert lookup_path.read_text() == "lookup"
