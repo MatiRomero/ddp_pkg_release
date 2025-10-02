@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence, Literal
+from typing import Callable, Mapping, Sequence, Literal
 
 import numpy as np
 
@@ -18,11 +18,14 @@ from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward
 from ddp.scripts.csv_loader import load_jobs_from_csv
 
-DispatchState = tuple[
-    Callable[[int, int, Sequence[Job]], float],
-    Callable[[int, int, Sequence[Job]], float],
-    Optional[np.ndarray],
-]
+_POLICY_DEFAULT_GAMMA: dict[str, float] = {
+    "greedy": 1.0,
+    "greedy+": 1.0,
+    "batch": 0.5,
+    "batch+": 1.0,
+    "rbatch": 0.5,
+    "rbatch+": 1.0,
+}
 
 
 class AverageDualError(RuntimeError):
@@ -395,7 +398,7 @@ def run_instance(
     print_table=True,
     return_details=False,
     print_matches=False,
-    gamma: float = 0.5,
+    gamma: float | None = None,
     tau: float = 0.0,
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
@@ -410,15 +413,19 @@ def run_instance(
     """Run the SHADOW × DISPATCH grid on a job instance.
 
     Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative)
-    and ``tau`` (additive) before being used by the dispatch policies. ``gamma``
-    defaults to 0.5 so the standard BATCH/RBATCH heuristics subtract both job
-    shadows with the same scaling used in prior releases. The ``+`` variants use
-    the :func:`make_weight_fn_latest_shadow` helper, which subtracts only the
-    later job's shadow ("late-arrival" adjustment). Their scaling defaults to
+    and ``tau`` (additive) before being used by the dispatch policies. The
+    effective vector is computed as ``sp = base * gamma - tau`` so the additive
+    term discounts the scaled shadow. When ``gamma`` is omitted (``None``) a
+    policy-specific default is used: ``1`` for ``greedy``/``greedy+``, ``0.5``
+    for ``batch``/``rbatch``, and ``1`` for the ``+`` variants. Naive shadows
+    override the additive component with ``tau = gamma`` so their scaled values
+    collapse to ``-gamma``. The ``+`` variants use the
+    :func:`make_weight_fn_latest_shadow` helper, which subtracts only the later
+    job's shadow ("late-arrival" adjustment). Their scaling defaults to
     ``gamma_plus = 1`` with optional ``tau_plus`` shifts, and the effective
-    weight is strictly ``reward(i, j) - s_late``. ``tie_breaker`` selects how
-    greedy policies resolve score ties ("distance" by default, or "random"
-    using the provided seed).
+    weight is ``reward(i, j) - (base * gamma_plus - tau_plus)``. ``tie_breaker``
+    selects how greedy policies resolve score ties ("distance" by default, or
+    "random" using the provided seed).
 
     When ``"ad"`` is present in ``shadows`` the optional ``ad_duals`` lookup must
     already contain the runtime shadows aligned with ``jobs``. Provide either a
@@ -491,32 +498,14 @@ def run_instance(
                 print(f"[skip] Unknown shadow: {sh}")
             continue
 
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma + tau
-
-        score_fn = make_local_score(reward_fn, sp)
-        w_fn = make_weight_fn(reward_fn, sp)
-
-        extra_dispatch_state: dict[str, DispatchState] = {}
-        plus_variants = {"batch+", "rbatch+"}
-        if any(label in dispatches for label in plus_variants):
-            gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-            tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-            sp_plus = np.array(sp_base, dtype=float, copy=True)
-            sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-            score_plus = make_local_score(reward_fn, sp_plus)
-            weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
-            for label in plus_variants:
-                if label in dispatches:
-                    extra_dispatch_state[label] = (
-                        score_plus,
-                        weight_plus,
-                        None,
-                    )
-
         for disp in dispatches:
             t_run = time.perf_counter()
             if disp == "greedy":
+                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                tau_eff = gamma_eff if sh == "naive" else tau
+                sp = np.array(sp_base, dtype=float, copy=True)
+                sp = sp * gamma_eff - tau_eff
+                score_fn = make_local_score(reward_fn, sp)
                 res = simulate(
                     jobs,
                     score_fn,
@@ -530,6 +519,11 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "greedy+":
+                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                tau_eff = gamma_eff if sh == "naive" else tau
+                sp = np.array(sp_base, dtype=float, copy=True)
+                sp = sp * gamma_eff - tau_eff
+                score_fn = make_local_score(reward_fn, sp)
                 res = simulate(
                     jobs,
                     score_fn,
@@ -543,6 +537,12 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "batch":
+                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                tau_eff = gamma_eff if sh == "naive" else tau
+                sp = np.array(sp_base, dtype=float, copy=True)
+                sp = sp * gamma_eff - tau_eff
+                score_fn = make_local_score(reward_fn, sp)
+                w_fn = make_weight_fn(reward_fn, sp)
                 res = simulate(
                     jobs,
                     score_fn,
@@ -556,7 +556,12 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "batch+":
-                score_plus, weight_plus, shadow_plus = extra_dispatch_state["batch+"]
+                gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+                tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+                sp_plus = np.array(sp_base, dtype=float, copy=True)
+                sp_plus = sp_plus * gamma_plus_eff - tau_plus_eff
+                score_plus = make_local_score(reward_fn, sp_plus)
+                weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
                 res = simulate(
                     jobs,
                     score_plus,
@@ -565,11 +570,17 @@ def run_instance(
                     time_window=d,
                     policy="batch",
                     weight_fn=weight_plus,
-                    shadow=shadow_plus,
+                    shadow=None,
                     seed=seed,
                     tie_breaker=tie_breaker,
                 )
             elif disp == "rbatch":
+                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                tau_eff = gamma_eff if sh == "naive" else tau
+                sp = np.array(sp_base, dtype=float, copy=True)
+                sp = sp * gamma_eff - tau_eff
+                score_fn = make_local_score(reward_fn, sp)
+                w_fn = make_weight_fn(reward_fn, sp)
                 res = simulate(
                     jobs,
                     score_fn,
@@ -583,7 +594,12 @@ def run_instance(
                     tie_breaker=tie_breaker,
                 )
             elif disp == "rbatch+":
-                score_plus, weight_plus, shadow_plus = extra_dispatch_state["rbatch+"]
+                gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+                tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+                sp_plus = np.array(sp_base, dtype=float, copy=True)
+                sp_plus = sp_plus * gamma_plus_eff - tau_plus_eff
+                score_plus = make_local_score(reward_fn, sp_plus)
+                weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
                 res = simulate(
                     jobs,
                     score_plus,
@@ -592,7 +608,7 @@ def run_instance(
                     time_window=d,
                     policy="rbatch",
                     weight_fn=weight_plus,
-                    shadow=shadow_plus,
+                    shadow=None,
                     seed=seed,
                     tie_breaker=tie_breaker,
                 )
@@ -723,7 +739,7 @@ def run_once(
     dispatch: str,
     with_opt: bool = False,
     opt_method: str = "auto",
-    gamma: float = 0.5,
+    gamma: float | None = None,
     tau: float = 0.0,
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
@@ -738,7 +754,8 @@ def run_once(
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
     The optional ``gamma``/``tau`` parameters mirror those in :func:`run_instance`
-    with the same defaults (0.5 and 0). For ``dispatch="batch+"`` or
+    with the same defaults (policy-specific ``gamma`` and ``tau`` subtracted
+    from the scaled shadows). For ``dispatch="batch+"`` or
     ``dispatch="rbatch+"`` the weight computation subtracts only the later job's
     shadow, producing ``reward(i, j) - s_late``. ``gamma_plus`` defaults to 1 (and
     can be overridden) while ``tau_plus`` still shifts the late-arrival shadows.
@@ -776,14 +793,13 @@ def run_once(
     else:
         raise ValueError(f"Unknown shadow: {shadow}")
 
-    sp = np.array(sp_base, dtype=float, copy=True)
-    sp = sp * gamma + tau
-
-    score_fn = make_local_score(reward_fn, sp)
-    w_fn = make_weight_fn(reward_fn, sp)
-
     t_run = time.perf_counter()
     if dispatch == "greedy":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = gamma_eff if shadow == "naive" else tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff - tau_eff
+        score_fn = make_local_score(reward_fn, sp)
         res = simulate(
             jobs,
             score_fn,
@@ -797,6 +813,11 @@ def run_once(
             tie_breaker=tie_breaker,
         )
     elif dispatch == "greedy+":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = gamma_eff if shadow == "naive" else tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff - tau_eff
+        score_fn = make_local_score(reward_fn, sp)
         res = simulate(
             jobs,
             score_fn,
@@ -810,6 +831,12 @@ def run_once(
             tie_breaker=tie_breaker,
         )
     elif dispatch == "batch":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = gamma_eff if shadow == "naive" else tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff - tau_eff
+        score_fn = make_local_score(reward_fn, sp)
+        w_fn = make_weight_fn(reward_fn, sp)
         res = simulate(
             jobs,
             score_fn,
@@ -826,7 +853,7 @@ def run_once(
         gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
-        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+        sp_plus = sp_plus * gamma_plus_eff - tau_plus_eff
         score_fn_plus = make_local_score(reward_fn, sp_plus)
         w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
         res = simulate(
@@ -842,6 +869,12 @@ def run_once(
             tie_breaker=tie_breaker,
         )
     elif dispatch == "rbatch":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = gamma_eff if shadow == "naive" else tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff - tau_eff
+        score_fn = make_local_score(reward_fn, sp)
+        w_fn = make_weight_fn(reward_fn, sp)
         res = simulate(
             jobs,
             score_fn,
@@ -858,7 +891,7 @@ def run_once(
         gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
-        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+        sp_plus = sp_plus * gamma_plus_eff - tau_plus_eff
         score_fn_plus = make_local_score(reward_fn, sp_plus)
         w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
         res = simulate(
@@ -954,17 +987,21 @@ def main() -> None:
     p.add_argument(
         "--gamma",
         type=float,
-        default=0.5,
+        default=None,
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
-            "Defaults to 0.5 so BATCH/RBATCH match prior releases."
+            "When omitted, uses policy-specific defaults (1 for greedy/greedy+, "
+            "0.5 for batch/rbatch, 1 for batch+/rbatch+)."
         ),
     )
     p.add_argument(
         "--tau",
         type=float,
         default=0.0,
-        help="Additive offset applied to the shadow potentials before dispatch.",
+        help=(
+            "Additive offset subtracted from the scaled shadow potentials before dispatch. "
+            "Naive shadows automatically use tau=gamma."
+        ),
     )
     p.add_argument(
         "--plus_gamma",
@@ -980,7 +1017,7 @@ def main() -> None:
         type=float,
         default=None,
         help=(
-            "Additive offset for the late-arrival ('+' variants) shadow potentials. "
+            "Additive offset subtracted from the late-arrival ('+' variants) shadow potentials. "
             "Defaults to 0 when omitted."
         ),
     )
