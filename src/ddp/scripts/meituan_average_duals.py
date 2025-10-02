@@ -222,6 +222,29 @@ def export_average_duals_npz(summary: "pd.DataFrame", output: Path) -> None:
     print(f"Wrote runtime average-dual NPZ to {output}")
 
 
+def _ensure_job_lookup_columns(job_lookup: "pd.DataFrame") -> None:
+    required = {"job_index", "mean_dual"}
+    missing = required.difference(job_lookup.columns)
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(f"Job lookup frame is missing required columns: {missing_list}")
+
+
+def export_job_aligned_duals_csv(job_lookup: "pd.DataFrame", output: Path) -> None:
+    """Write a job-aligned CSV lookup preserving job order."""
+
+    _require_pandas()
+    _ensure_job_lookup_columns(job_lookup)
+
+    lookup = job_lookup.loc[:, ["job_index", "mean_dual"]].copy()
+    lookup["job_index"] = lookup["job_index"].astype(int)
+    lookup["mean_dual"] = lookup["mean_dual"].astype(float)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lookup.to_csv(output, index=False)
+    print(f"Wrote job-level average-dual CSV to {output}")
+
+
 # ---------------------------------------------------------------------------
 # Matching and fallbacks
 # ---------------------------------------------------------------------------
@@ -361,6 +384,7 @@ def ensure_hd_cache(
 class PipelineResult:
     summary: pd.DataFrame
     lookup: pd.DataFrame
+    job_lookup: pd.DataFrame
 
 
 def build_average_duals(
@@ -441,12 +465,16 @@ def build_average_duals(
         .rename(columns={"ad_mean": "mean_dual"})
     )
 
+    job_lookup = enriched_target.loc[:, ["job_index", "ad_mean"]].rename(
+        columns={"ad_mean": "mean_dual"}
+    )
+
     elapsed = time.perf_counter() - start
     print(
         "Processed day %d with %d history days (resolution=%d) in %.2fs"
         % (day, len(history_days), resolution, elapsed)
     )
-    return PipelineResult(summary=summary, lookup=lookup)
+    return PipelineResult(summary=summary, lookup=lookup, job_lookup=job_lookup)
 
 
 def save_summary_map(summary: "pd.DataFrame", output: Path) -> None:
@@ -570,6 +598,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional CSV path for a runtime-ready average-dual lookup",
     )
     parser.add_argument(
+        "--export-ad-job-csv",
+        type=Path,
+        help="Optional CSV path for the job-aligned average-dual lookup",
+    )
+    parser.add_argument(
         "--folium-map",
         type=Path,
         help="Optional HTML path for a Folium sender coverage map",
@@ -616,6 +649,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ad_csv_path = args.export_ad_csv or (default_export_dir / f"{stem}_lookup.csv")
     export_average_duals_csv(result.lookup, ad_csv_path)
+
+    ad_job_csv_path = args.export_ad_job_csv or (default_export_dir / f"{stem}_full.csv")
+    export_job_aligned_duals_csv(result.job_lookup, ad_job_csv_path)
 
     if args.folium_map:
         save_summary_map(result.summary, args.folium_map)

@@ -53,9 +53,12 @@ onto the specific jobs you plan to simulate, producing either:
 
 Tools such as `ddp.scripts.meituan_average_duals` perform this enrichment by
 matching sender/recipient hex pairs for each target day, applying any neighbour
-searches or smoothing offline, and saving the resulting per-job table. The
-runtime script now expects this enriched artefact via `--ad_duals` and simply
-loads the values—no additional mapping or fallback policies are applied.
+searches or smoothing offline, and saving the resulting per-job table. The CLI
+exports a `*_lookup.csv` with type-level means alongside a `*_full.csv`
+containing the ordered `(job_index, mean_dual)` pairs so downstream simulations
+can choose the representation they require. The runtime script now expects this
+enriched artefact via `--ad_duals` and simply loads the values—no additional
+mapping or fallback policies are applied.
 
 ## Putting it all together
 
