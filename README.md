@@ -197,12 +197,15 @@ python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --save
 ```
 
 The default dispatch set covers `greedy`, `greedy+`, `batch`, `batch+`, `rbatch`, and
-`rbatch+`. The baseline BATCH/RBATCH heuristics now default to scaling shadows by
-γ = 0.5 (still overridable via `--gamma`/`--tau`). The `+` variants apply a
-"late-arrival" adjustment: when pairing jobs they subtract only the later job's
-shadow value, using separate `--plus_gamma`/`--plus_tau` controls (defaults
-`--plus_gamma = 1`, `--plus_tau = 0`). The resulting weight is strictly
-`reward(i, j) - s_late` and the simulation no longer re-adds the critical shadow.
+`rbatch+`. Policy defaults now scale shadows with γ = 1 for the greedy variants,
+γ = 0.5 for batch/rbatch, and γ = 1 for the late-arrival (`+`) policies unless you
+override `--gamma` (shared by the non-`+` policies) or `--plus_gamma`. The
+additive `--tau` offset is subtracted from the scaled potentials, and naive
+shadows automatically use τ = γ. The `+` variants apply a "late-arrival"
+adjustment: when pairing jobs they subtract only the later job's shadow value,
+using separate `--plus_gamma`/`--plus_tau` controls (defaults `--plus_gamma = 1`,
+`--plus_tau = 0`). The resulting weight is strictly `reward(i, j) - s_late` and the
+simulation no longer re-adds the critical shadow.
 
 This will write an aggregated CSV (e.g., `results/results_agg.csv`) with mean and std columns for every metric.
 

@@ -14,6 +14,7 @@ from ddp.model import Job
 from ddp.scripts.run import (
     AverageDualError,
     AverageDualTable,
+    _POLICY_DEFAULT_GAMMA,
     _load_precomputed_ad_shadows,
     make_local_score,
     make_weight_fn,
@@ -83,7 +84,8 @@ def _shadow_vector(
 def _prepare_dispatch(
     policy: str,
     base_shadow: np.ndarray,
-    gamma: float,
+    shadow_label: str,
+    gamma: float | None,
     tau: float,
     gamma_plus: float | None,
     tau_plus: float | None,
@@ -98,11 +100,13 @@ def _prepare_dispatch(
     if policy in {"batch+", "rbatch+"}:
         gamma_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_eff = tau_plus if tau_plus is not None else 0.0
-        sp = sp * gamma_eff + tau_eff
+        sp = sp * gamma_eff - tau_eff
         weight_fn = make_weight_fn_latest_shadow(reward_fn, sp)
         sim_shadow: np.ndarray | None = None
     else:
-        sp = sp * gamma + tau
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[policy]
+        tau_eff = gamma_eff if shadow_label == "naive" else tau
+        sp = sp * gamma_eff - tau_eff
         weight_fn = make_weight_fn(reward_fn, sp)
         sim_shadow = sp
 
@@ -150,17 +154,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.5,
+        default=None,
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
-            "Defaults to 0.5 for compatibility with the batch/rbatch heuristics."
+            "When omitted, uses the policy default (1 for greedy/greedy+, 0.5 for batch/rbatch, 1 for the '+ variants)."
         ),
     )
     parser.add_argument(
         "--tau",
         type=float,
         default=0.0,
-        help="Additive offset applied to the base shadow potentials before dispatch.",
+        help=(
+            "Additive offset subtracted from the scaled shadow potentials before dispatch. "
+            "Naive shadows automatically use tau=gamma."
+        ),
     )
     parser.add_argument(
         "--plus_gamma",
@@ -176,7 +183,7 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         default=None,
         help=(
-            "Additive offset for the late-arrival ('+' variants) shadow potentials. "
+            "Additive offset subtracted from the late-arrival ('+' variants) shadow potentials. "
             "Defaults to 0 when omitted."
         ),
     )
@@ -237,6 +244,7 @@ def main(argv: list[str] | None = None) -> None:
     decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = _prepare_dispatch(
         args.policy,
         base_shadow,
+        args.shadow,
         args.gamma,
         args.tau,
         args.plus_gamma,
