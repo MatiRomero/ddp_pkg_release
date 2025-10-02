@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -13,13 +13,12 @@ from ddp.engine.sim import simulate
 from ddp.model import Job
 from ddp.scripts.run import (
     AverageDualError,
+    _load_precomputed_ad_shadows,
     make_local_score,
     make_weight_fn,
     make_weight_fn_latest_shadow,
-    load_average_dual_mapper,
     load_average_duals,
     reward_fn,
-    _resolve_average_duals,
 )
 
 
@@ -52,9 +51,7 @@ def _shadow_vector(
     jobs: Sequence[Job],
     time_window,
     *,
-    ad_duals: Mapping[str, float] | None,
-    ad_mapping: Callable[[Job], str | None] | None,
-    ad_missing: str,
+    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
 ) -> np.ndarray:
     jobs_list = list(jobs)
     n = len(jobs_list)
@@ -67,38 +64,12 @@ def _shadow_vector(
         lp = compute_lp_relaxation(jobs_list, reward_fn, time_window=time_window)
         return np.array(lp["duals"], dtype=float)
     if label == "ad":
-        if ad_duals is None or ad_mapping is None:
-            raise SystemExit("AD shadows require both --ad_duals and --ad_mapping")
-        lp = compute_lp_relaxation(jobs_list, reward_fn, time_window=time_window)
-        duals = np.array(lp["duals"], dtype=float)
+        if ad_duals is None:
+            raise SystemExit("AD shadows require --ad_duals")
         try:
-            sp, missing, _assignments, _table = _resolve_average_duals(
-                jobs_list,
-                duals,
-                ad_duals,
-                ad_mapping,
-                missing=ad_missing,
-            )
+            return _load_precomputed_ad_shadows(jobs_list, ad_duals)
         except AverageDualError as exc:
             raise SystemExit(str(exc)) from exc
-        if missing:
-            missing_labels = sorted(
-                {
-                    "<none>" if label in (None, "None") else str(label)
-                    for (_idx, label) in missing
-                }
-            )
-            print(
-                "[trace-ad] Missing types encountered (" + ", ".join(missing_labels) + ")",
-                end="",
-            )
-            if ad_missing == "hd":
-                print(" -> used HD dual fallback")
-            elif ad_missing == "zero":
-                print(" -> substituted zero")
-            else:
-                print()
-        return sp
     raise SystemExit(f"Unsupported shadow '{label}'.")
 
 
@@ -209,20 +180,6 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
-        "--ad_mapping",
-        help=(
-            "Module:function resolving to a callable that maps Job -> type for AD shadows."
-        ),
-    )
-    parser.add_argument(
-        "--ad_missing",
-        default="neighbor",
-        choices=["neighbor", "hd", "zero", "error"],
-        help=(
-            "Policy for jobs whose mapped type is absent in the average-dual table."
-        ),
-    )
-    parser.add_argument(
         "--plot",
         action="store_true",
         help="Plot the size of the available set over the event timeline.",
@@ -245,17 +202,14 @@ def main(argv: list[str] | None = None) -> None:
     time_window = float(args.d)
 
     ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
-    ad_mapper = load_average_dual_mapper(args.ad_mapping) if args.ad_mapping else None
-    if args.shadow == "ad" and (ad_table is None or ad_mapper is None):
-        raise SystemExit("--shadow=ad requires --ad_duals and --ad_mapping")
+    if args.shadow == "ad" and ad_table is None:
+        raise SystemExit("--shadow=ad requires --ad_duals")
 
     base_shadow = _shadow_vector(
         args.shadow,
         jobs,
         time_window,
         ad_duals=ad_table,
-        ad_mapping=ad_mapper,
-        ad_missing=args.ad_missing,
     )
 
     decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = _prepare_dispatch(

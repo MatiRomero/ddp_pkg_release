@@ -42,23 +42,28 @@ After assigning types, aggregate HD rows into an average-dual table. Two storage
 
 The resulting dictionary maps type strings to mean duals and can be shared across experiments.
 
-## 4. Runtime consumption and fallback policies
+## 4. Enriching jobs with runtime AD shadows
 
-At simulation time (`ddp.scripts.run`), AD shadows are enabled by passing both the table (`--ad_duals`) and the mapper (`--ad_mapping`). Jobs are mapped to type keys and filled with the corresponding averages. Missing entries trigger one of four policies controlled by `--ad_missing`:
+Once the type-level means have been computed, transform them into a
+*job-aligned* lookup before running simulations. Join the aggregated values back
+onto the specific jobs you plan to simulate, producing either:
 
-* `neighbor` (default): iteratively expand the sender/recipient H3 disks until a populated neighbour pair is found, then fall back to the HD dual when no neighbour exists.
-* `hd`: immediately fall back to the job’s original HD dual from the LP relaxation.
-* `zero`: substitute `0.0`.
-* `error`: abort with `AverageDualError` listing the unresolved types.
+* A NumPy array ordered by job index (`0..n-1`).
+* A CSV (or dictionary) mapping each `job_index` to its precomputed `mean_dual`.
 
-The helper `_resolve_average_duals` applies the mapping, records missing keys, and injects the requested fallback, returning the AD shadow vector alongside a coverage report.【F:src/ddp/scripts/run.py†L84-L150】 The dispatcher then proceeds exactly as with other shadow families: shadows may be rescaled (`gamma`, `tau`), re-used for the `+` variants, and evaluated against the standard score/weight functions.【F:src/ddp/scripts/run.py†L152-L303】
+Tools such as `ddp.scripts.meituan_average_duals` perform this enrichment by
+matching sender/recipient hex pairs for each target day, applying any neighbour
+searches or smoothing offline, and saving the resulting per-job table. The
+runtime script now expects this enriched artefact via `--ad_duals` and simply
+loads the values—no additional mapping or fallback policies are applied.
 
 ## Putting it all together
 
 1. **Sample HD duals** with `python -m ddp.scripts.build_hd_dataset --out_csv hd_samples.csv ...` to produce the per-job CSV described above.
 2. **Define or adapt a type mapper** that converts `Job` objects into type strings, possibly by wrapping a coordinate-based helper like the uniform grid.
 3. **Aggregate by type** to compute mean duals, saving the lookup as an NPZ (`types`, `mean_dual`) or CSV (`type`, `mean_dual`, `std_dev`).
-4. **Run experiments** with `python -m ddp.scripts.run --shadows ad --ad_duals ... --ad_mapping ... --ad_missing {neighbor,hd,zero,error}` so AD shadows use the prepared table with the chosen fallback policy.
+4. **Enrich the target jobs** with those means, materialising a job-aligned lookup (e.g. `job_index,mean_dual`).
+5. **Run experiments** with `python -m ddp.scripts.run --shadows ad --ad_duals path/to/job_level_lookup` so AD shadows use the prepared values directly.
 
 This pipeline keeps HD sampling, type assignment, and runtime evaluation decoupled, making it straightforward to iterate on new mappers or dataset slices without modifying the simulation logic.
 

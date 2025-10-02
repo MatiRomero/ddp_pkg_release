@@ -26,10 +26,10 @@ python -m ddp.scripts.run --jobs-csv data/meituan_sample.csv --d 3 \
   --export-npz meituan_sample.npz --save_csv run_from_csv.csv
 # Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
 ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
-# Evaluate average-dual (AD) shadows using a pre-computed table and type mapper
+# Evaluate average-dual (AD) shadows using a pre-computed per-job table
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
-  --ad_duals ad_means.npz --ad_mapping my_project.mappers:job_type --ad_missing hd
+  --ad_duals ad_runtime_values.csv
 # Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
 # Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
@@ -51,17 +51,15 @@ python -m ddp.scripts.meituan_average_duals \
   --folium-map reports/meituan_day5_sender_coverage.html
 ```
 
-Average-dual (``ad``) shadows map each job to a discrete type (via
-``module:function`` provided to ``--ad_mapping``) and pull a mean dual value from
-the lookup passed to ``--ad_duals``. Tables may be ``.npz`` archives containing
-parallel ``types`` and ``mean_dual`` arrays or CSV files with ``type``, ``mean_dual``,
-and ``std_dev`` columns. When a job's mapped type is absent, specify the fallback
-behaviour with ``--ad_missing``: ``hd`` (default) replaces that job's shadow with
-the HD dual from the LP relaxation, ``zero`` substitutes 0, and ``error`` aborts.
-The same options are available for ``ddp-trace-available`` and
-``python -m ddp.scripts.sweep_param`` so interactive tracing and sweep runs can
-share the same assets. See [Average-dual pipeline overview](docs/average_dual_pipeline.md)
-for a detailed walkthrough of the HD sampling, type mapping, and runtime integration pipeline.
+Average-dual (``ad``) shadows now expect a *pre-enriched* lookup that already
+stores the runtime value for every job in the provided instance. Pass either a
+NumPy array archive (``.npz`` with a single array) or a CSV file with two
+columns: ``job_index`` (0-based) and ``mean_dual``. Runtime mapping and fallback
+policies have been removed—the simulator simply reads the prepared values and
+uses them as-is. This keeps the dispatch evaluation focused on the supplied
+inputs and shifts any interpolation or neighbour search to the offline data
+pipeline. See [Average-dual pipeline overview](docs/average_dual_pipeline.md)
+for details on producing these per-job lookups.
 
 ### Loading job instances from CSV files
 
