@@ -6,16 +6,12 @@ import argparse
 import csv
 import os
 import time
-from typing import Callable, Iterable, Iterator
+from typing import Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
 from ddp.model import Job, generate_jobs
-from ddp.scripts.run import (
-    load_average_dual_mapper,
-    load_average_duals,
-    run_instance,
-)
+from ddp.scripts.run import load_average_duals, run_instance
 
 try:  # pragma: no cover - tqdm is optional at runtime
     from tqdm import tqdm
@@ -100,9 +96,7 @@ def _run_trials_for_config(
     dispatches: list[str],
     desc: str | None,
     extra_meta: dict[str, float | int | str | None] | None,
-    ad_duals: dict[str, float] | None,
-    ad_mapping: Callable[[Job], str | None] | None,
-    ad_missing: str,
+    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
 ) -> Iterator[dict]:
     """Yield rows for ``args.trials`` experiments at a given ``(n, d)`` setting."""
 
@@ -140,9 +134,6 @@ def _run_trials_for_config(
             return_details=False,
             print_matches=False,
             ad_duals=ad_duals,
-            ad_mapping=ad_mapping,
-            ad_missing=ad_missing,
-            ad_duals_path=args.ad_duals,
         )
         for record in result["rows"]:
             enriched = dict(record)
@@ -228,18 +219,6 @@ def main() -> None:
             "Path to an average-dual table (.npz or CSV). Required when --shadows includes 'ad'."
         ),
     )
-    parser.add_argument(
-        "--ad_mapping",
-        help=(
-            "Module:function resolving to a callable that maps Job -> type for AD shadows."
-        ),
-    )
-    parser.add_argument(
-        "--ad_missing",
-        default="neighbor",
-        choices=["neighbor", "hd", "zero", "error"],
-        help="Policy for handling jobs whose type is missing from the average-dual table.",
-    )
 
     args = parser.parse_args()
 
@@ -257,12 +236,8 @@ def main() -> None:
         parser.error("No valid dispatch policies supplied via --dispatch")
 
     ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
-    ad_mapper = load_average_dual_mapper(args.ad_mapping) if args.ad_mapping else None
-    if "ad" in shadows:
-        if ad_table is None or ad_mapper is None:
-            parser.error(
-                "--shadows includes 'ad' so both --ad_duals and --ad_mapping must be provided"
-            )
+    if "ad" in shadows and ad_table is None:
+        parser.error("--shadows includes 'ad' so --ad_duals must be provided")
 
     if args.save_csv:
         if os.path.isabs(args.save_csv) or not args.outdir:
@@ -339,8 +314,6 @@ def main() -> None:
                     desc=f"{args.param}={value}",
                     extra_meta=extra_meta,
                     ad_duals=ad_table,
-                    ad_mapping=ad_mapper,
-                    ad_missing=args.ad_missing,
                 ):
                     record_row(row)
         else:
@@ -350,19 +323,17 @@ def main() -> None:
                 "n_fixed": args.n,
                 "d_fixed": args.d,
             }
-            for row in _run_trials_for_config(
-                n=args.n,
-                d=args.d,
-                args=args,
-                shadows=shadows,
-                dispatches=dispatches,
-                desc=f"n={args.n}, d={args.d}",
-                extra_meta=extra_meta,
-                ad_duals=ad_table,
-                ad_mapping=ad_mapper,
-                ad_missing=args.ad_missing,
-            ):
-                record_row(row)
+                for row in _run_trials_for_config(
+                    n=args.n,
+                    d=args.d,
+                    args=args,
+                    shadows=shadows,
+                    dispatches=dispatches,
+                    desc=f"n={args.n}, d={args.d}",
+                    extra_meta=extra_meta,
+                    ad_duals=ad_table,
+                ):
+                    record_row(row)
     finally:
         if csv_handle is not None:
             csv_handle.close()

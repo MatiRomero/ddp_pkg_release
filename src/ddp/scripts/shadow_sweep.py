@@ -15,12 +15,9 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from ddp.model import Job, generate_jobs
-from ddp.scripts.average_duals import _load_mapping
-from ddp.scripts.build_average_duals import compute_average_duals
 from ddp.scripts.run import (
     AverageDualError,
     load_average_duals,
-    load_average_dual_mapper,
     run_instance,
 )
 
@@ -184,9 +181,7 @@ def _run_sweep_from_trial_jobs(
     tau_values: Sequence[float],
     geometries: Sequence[GeometryPreset],
     shadows: Sequence[str],
-    ad_duals: Mapping[str, float] | None,
-    ad_mapping: Callable[[Job], str | None] | None,
-    ad_missing: str,
+    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
     trial_jobs: Sequence[tuple[int, Mapping[str, Sequence[Job]]]],
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
@@ -246,16 +241,13 @@ def _run_sweep_from_trial_jobs(
                                 seed=seed,
                                 with_opt=False,
                                 save_csv="",
-                                print_table=False,
-                                return_details=False,
-                                print_matches=False,
-                                gamma=float(gamma),
-                                tau=float(tau),
-                                ad_duals=ad_duals,
-                                ad_mapping=ad_mapping,
-                                ad_missing=ad_missing,
-                                ad_duals_path=args.ad_duals,
-                            )
+                            print_table=False,
+                            return_details=False,
+                            print_matches=False,
+                            gamma=float(gamma),
+                            tau=float(tau),
+                            ad_duals=ad_duals,
+                        )
                             row = result["rows"][0]
                             metric_value = _extract_metric(row, metric)
                             if metric_value is not None:
@@ -308,9 +300,7 @@ def _run_sweep(
     tau_values: Sequence[float],
     geometries: Sequence[GeometryPreset],
     shadows: Sequence[str],
-    ad_duals: Mapping[str, float] | None,
-    ad_mapping: Callable[[Job], str | None] | None,
-    ad_missing: str,
+    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Generate synthetic trials then delegate to :func:`_run_sweep_from_trial_jobs`."""
@@ -325,8 +315,6 @@ def _run_sweep(
         geometries=geometries,
         shadows=shadows,
         ad_duals=ad_duals,
-        ad_mapping=ad_mapping,
-        ad_missing=ad_missing,
         trial_jobs=trial_jobs,
         progress=progress,
     )
@@ -491,40 +479,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Path to a precomputed average-dual table (.npz or CSV). Required when "
-            "--shadows includes 'ad' unless --ad-hd-csv is supplied."
-        ),
-    )
-    parser.add_argument(
-        "--ad-hd-csv",
-        default="",
-        help=(
-            "Hindsight-dual dataset CSV used to aggregate average-dual tables on the fly. "
-            "Requires --ad-hd-mapping and is used when --ad-duals is omitted."
-        ),
-    )
-    parser.add_argument(
-        "--ad-hd-mapping",
-        default="",
-        help=(
-            "module:callable specification for the coordinate-based mapping applied to "
-            "the hindsight-dual dataset (required with --ad-hd-csv)."
-        ),
-    )
-    parser.add_argument(
-        "--ad-mapping",
-        default="",
-        help=(
-            "module:callable specification that maps Job objects to average-dual types "
-            "(required when evaluating AD shadows)."
-        ),
-    )
-    parser.add_argument(
-        "--ad-missing",
-        choices=("neighbor", "hd", "zero", "error"),
-        default="neighbor",
-        help=(
-            "Policy for jobs whose type is absent from the average-dual table when "
-            "evaluating AD shadows"
+            "--shadows includes 'ad'."
         ),
     )
     parser.add_argument(
@@ -588,37 +543,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not shadows:
         parser.error("at least one shadow family must be selected")
 
-    ad_duals: Mapping[str, float] | None = None
-    ad_mapping = None
+    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None = None
     if "ad" in shadows:
-        if not args.ad_mapping:
-            parser.error("--ad-mapping is required when evaluating AD shadows")
+        if not args.ad_duals:
+            parser.error("--ad-duals is required when evaluating AD shadows")
         try:
-            ad_mapping = load_average_dual_mapper(args.ad_mapping)
-        except (ImportError, AttributeError, TypeError, ValueError) as exc:
-            parser.error(f"invalid --ad-mapping: {exc}")
-
-        if args.ad_duals:
-            try:
-                ad_duals = load_average_duals(args.ad_duals)
-            except (OSError, ValueError) as exc:
-                parser.error(f"failed to load --ad-duals: {exc}")
-        else:
-            if not args.ad_hd_csv:
-                parser.error("--ad-duals or --ad-hd-csv is required when using AD shadows")
-            if not args.ad_hd_mapping:
-                parser.error("--ad-hd-mapping is required when using --ad-hd-csv")
-            try:
-                hd_mapping, _expected = _load_mapping(args.ad_hd_mapping)
-            except (ImportError, AttributeError, TypeError, ValueError) as exc:
-                parser.error(f"invalid --ad-hd-mapping: {exc}")
-            try:
-                stats = compute_average_duals(Path(args.ad_hd_csv), hd_mapping)
-            except (OSError, ValueError) as exc:
-                parser.error(f"failed to aggregate average duals: {exc}")
-            ad_duals = {str(key): bucket.mean for key, bucket in stats.items()}
-            if not ad_duals:
-                parser.error("average-dual aggregation produced an empty table")
+            ad_duals = load_average_duals(args.ad_duals)
+        except (OSError, ValueError) as exc:
+            parser.error(f"failed to load --ad-duals: {exc}")
 
     try:
         heatmap, records, best_entries = _run_sweep(
@@ -628,14 +560,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             seed0=args.seed0,
             dispatch=args.dispatch,
             metric=args.metric,
-            gamma_values=gamma_values,
-            tau_values=tau_values,
-            geometries=geometries,
-            shadows=shadows,
-            ad_duals=ad_duals,
-            ad_mapping=ad_mapping,
-            ad_missing=args.ad_missing,
-        )
+        gamma_values=gamma_values,
+        tau_values=tau_values,
+        geometries=geometries,
+        shadows=shadows,
+        ad_duals=ad_duals,
+    )
     except AverageDualError as exc:
         parser.error(str(exc))
 

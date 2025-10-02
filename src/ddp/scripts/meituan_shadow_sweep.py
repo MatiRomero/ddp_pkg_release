@@ -10,10 +10,8 @@ from typing import Iterable, Mapping, Sequence
 import matplotlib.pyplot as plt
 
 from ddp.model import Job
-from ddp.scripts.average_duals import _load_mapping
-from ddp.scripts.build_average_duals import compute_average_duals
 from ddp.scripts.csv_loader import load_jobs_from_csv
-from ddp.scripts.run import AverageDualError, load_average_duals, load_average_dual_mapper
+from ddp.scripts.run import AverageDualError, load_average_duals
 from ddp.scripts.shadow_sweep import (
     ALLOWED_METRICS,
     ALL_SHADOWS,
@@ -134,38 +132,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Path to a precomputed average-dual table (.npz or CSV). Required when "
-            "--shadows includes 'ad' unless --ad-hd-csv is supplied."
+            "--shadows includes 'ad'."
         ),
-    )
-    parser.add_argument(
-        "--ad-hd-csv",
-        default="",
-        help=(
-            "Hindsight-dual dataset CSV used to aggregate average-dual tables on the fly. "
-            "Requires --ad-hd-mapping and is used when --ad-duals is omitted."
-        ),
-    )
-    parser.add_argument(
-        "--ad-hd-mapping",
-        default="",
-        help=(
-            "module:callable specification for the coordinate-based mapping applied to "
-            "the hindsight-dual dataset (required with --ad-hd-csv)."
-        ),
-    )
-    parser.add_argument(
-        "--ad-mapping",
-        default="",
-        help=(
-            "module:callable specification that maps Job objects to average-dual types "
-            "(required when evaluating AD shadows)."
-        ),
-    )
-    parser.add_argument(
-        "--ad-missing",
-        choices=("neighbor", "hd", "zero", "error"),
-        default="neighbor",
-        help="Fallback policy for jobs missing from the average-dual table",
     )
     parser.add_argument(
         "--show",
@@ -222,37 +190,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not jobs_paths:
         parser.error("no CSV files matched --jobs-csv")
 
-    ad_duals: Mapping[str, float] | None = None
-    ad_mapping = None
+    ad_duals: Mapping[object, float] | Sequence[float] | None = None
     if "ad" in shadows:
-        if not args.ad_mapping:
-            parser.error("--ad-mapping is required when evaluating AD shadows")
+        if not args.ad_duals:
+            parser.error("--ad-duals is required when evaluating AD shadows")
         try:
-            ad_mapping = load_average_dual_mapper(args.ad_mapping)
-        except (ImportError, AttributeError, TypeError, ValueError) as exc:
-            parser.error(f"invalid --ad-mapping: {exc}")
-
-        if args.ad_duals:
-            try:
-                ad_duals = load_average_duals(args.ad_duals)
-            except (OSError, ValueError) as exc:
-                parser.error(f"failed to load --ad-duals: {exc}")
-        else:
-            if not args.ad_hd_csv:
-                parser.error("--ad-duals or --ad-hd-csv is required when using AD shadows")
-            if not args.ad_hd_mapping:
-                parser.error("--ad-hd-mapping is required when using --ad-hd-csv")
-            try:
-                hd_mapping, _expected = _load_mapping(args.ad_hd_mapping)
-            except (ImportError, AttributeError, TypeError, ValueError) as exc:
-                parser.error(f"invalid --ad-hd-mapping: {exc}")
-            try:
-                stats = compute_average_duals(Path(args.ad_hd_csv), hd_mapping)
-            except (OSError, ValueError) as exc:
-                parser.error(f"failed to aggregate average duals: {exc}")
-            ad_duals = {str(key): bucket.mean for key, bucket in stats.items()}
-            if not ad_duals:
-                parser.error("average-dual aggregation produced an empty table")
+            ad_duals = load_average_duals(args.ad_duals)
+        except (OSError, ValueError) as exc:
+            parser.error(f"failed to load --ad-duals: {exc}")
 
     trial_jobs: list[tuple[int, dict[str, Sequence[Job]]]] = []
     for index, csv_path in enumerate(jobs_paths):
@@ -273,8 +218,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             geometries=[_DATASET_GEOMETRY],
             shadows=shadows,
             ad_duals=ad_duals,
-            ad_mapping=ad_mapping,
-            ad_missing=args.ad_missing,
             trial_jobs=trial_jobs,
             progress=not args.no_progress,
         )
