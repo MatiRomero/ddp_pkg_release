@@ -57,3 +57,17 @@ def test_load_average_duals_from_job_aligned_csv(tmp_path) -> None:
 
     assert isinstance(duals, np.ndarray)
     np.testing.assert_allclose(duals, np.array([0.5, 1.25, -1.0], dtype=float))
+
+
+def test_load_average_duals_from_job_aligned_csv_with_ad_mean(tmp_path) -> None:
+    csv_path = tmp_path / "job_duals_ad_mean.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([" Job_Index ", "Ad_Mean "])
+        writer.writerow(["1", "1.5"])
+        writer.writerow(["0", "0.25"])
+
+    duals = load_average_duals(str(csv_path))
+
+    assert isinstance(duals, np.ndarray)
+    np.testing.assert_allclose(duals, np.array([0.25, 1.5], dtype=float))

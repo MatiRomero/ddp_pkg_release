@@ -33,13 +33,14 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
 
     Supported formats are ``.npz`` archives containing parallel ``types`` and
     ``mean_dual`` (or ``duals``) arrays, *type-based* CSV/TSV files with
-    ``type``/``mean_dual`` (or ``dual``) columns, and *job-aligned* CSV/TSV files
-    that provide one of the job-index headers (``job_index`` or ``index``)
-    alongside ``mean_dual``/``dual`` values. Type-based files return a mapping
-    keyed by the serialized type, while job-aligned files return a NumPy array
-    ordered by job index. Duplicate entries overwrite previous values. A
-    ``ValueError`` is raised when required headers are missing or indices are
-    inconsistent.
+    ``type``/``mean_dual`` (``ad_mean`` or ``dual`` also accepted) columns, and
+    *job-aligned* CSV/TSV files that provide one of the job-index headers
+    (``job_index`` or ``index``) alongside ``mean_dual``/``ad_mean``/``dual``
+    values. Header matching is case-insensitive and ignores surrounding
+    whitespace. Type-based files return a mapping keyed by the serialized type,
+    while job-aligned files return a NumPy array ordered by job index. Duplicate
+    entries overwrite previous values. A ``ValueError`` is raised when required
+    headers are missing or indices are inconsistent.
     """
 
     ext = os.path.splitext(path)[1].lower()
@@ -65,15 +66,25 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise ValueError("Average-dual CSV must include a header row")
-        lowered = {name.lower(): name for name in reader.fieldnames}
+        normalised: dict[str, str] = {}
+        for header in reader.fieldnames:
+            stripped = header.strip()
+            key = stripped.lower()
+            normalised.setdefault(key, header)
+
+        lowered = {key: normalised[key] for key in normalised}
         job_index_key = next(
             (lowered[column] for column in ("job_index", "index") if column in lowered),
             None,
         )
-        dual_key = lowered.get("mean_dual", lowered.get("dual"))
+        dual_key = None
+        for candidate in ("mean_dual", "ad_mean", "dual"):
+            if candidate in lowered:
+                dual_key = lowered[candidate]
+                break
         if dual_key is None:
             raise ValueError(
-                "Average-dual CSV missing 'mean_dual' (or 'dual') column"
+                "Average-dual CSV missing 'mean_dual', 'ad_mean', or 'dual' column"
             )
 
         if job_index_key is not None:
