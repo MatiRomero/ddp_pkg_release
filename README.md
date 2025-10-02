@@ -46,9 +46,8 @@ python -m ddp.scripts.meituan_average_duals \
   --history-days 20210228,20210301,20210302,20210303,20210304 \
   --resolution 8 \
   --neighbor-radius 1 \
-  --missing-policy hd \
   --export-summary reports/meituan_r8_summary.csv \
-  --export-target reports/meituan_day5_with_ad.csv \
+  --export-ad-csv reports/meituan_day5_lookup.csv \
   --folium-map reports/meituan_day5_sender_coverage.html
 ```
 
@@ -100,12 +99,12 @@ illustrates a typical invocation. Key options include:
 - `--neighbor-radius`: optional `k_ring` search when a `(sender_hex,
   recipient_hex)` pair has no historical coverage. Set to `0` to disable (the
   default).
-- `--missing-policy`: fallback applied when neighbours are also missing (`hd`
-  to reuse the hindsight dual, `zero`, or `nan`).
 - `--export-summary`: CSV path for the aggregated `(sender_hex,
   recipient_hex)` averages so they can be reused later.
-- `--export-target`: CSV path for the target-day jobs with attached mean duals
-  and metadata columns.
+- `--export-ad-csv`: CSV path for the runtime lookup table covering every
+  target-day `(sender_hex, recipient_hex)` pair. Unmatched jobs are assigned a
+  zero mean dual after neighbour search, ensuring simulations can proceed
+  without extra fallbacks.
 - `--folium-map`: optional HTML map visualising sender coverage at the chosen
   resolution.
 

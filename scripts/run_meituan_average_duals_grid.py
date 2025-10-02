@@ -21,8 +21,8 @@ DEFAULT_EXPORT_STEM = "meituan_ad_day{day}_d{d}_res{r}"
 DEFAULT_EXPORT_SUMMARY_TEMPLATE = str(
     DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_summary.csv"
 )
-DEFAULT_EXPORT_TARGET_TEMPLATE = str(
-    DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_full.csv"
+DEFAULT_EXPORT_LOOKUP_TEMPLATE = str(
+    DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_lookup.csv"
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -169,12 +169,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Radius for neighbour search when a hex pair is missing",
     )
     parser.add_argument(
-        "--missing-policy",
-        choices=["hd", "zero", "nan"],
-        default="hd",
-        help="Fallback when a hex pair has no historical average",
-    )
-    parser.add_argument(
         "--history-days",
         type=_parse_day_list,
         help="Comma-separated list of history days (default: all except target)",
@@ -199,11 +193,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--export-target",
+        "--export-lookup",
         type=str,
         help=(
-            "Optional template for CSV path of target day with attached AD means "
-            f"(default: {DEFAULT_EXPORT_TARGET_TEMPLATE})"
+            "Optional template for CSV path of runtime lookup tables "
+            f"(default: {DEFAULT_EXPORT_LOOKUP_TEMPLATE})"
         ),
     )
     parser.add_argument(
@@ -246,12 +240,11 @@ def run_grid(
     jobs_pattern: str,
     timestamp_column: str,
     neighbor_radius: int,
-    missing_policy: str,
     history_days: Sequence[int] | None,
     cache_dir: Path,
     force: bool,
     export_summary_template: str | None,
-    export_target_template: str | None,
+    export_lookup_template: str | None,
     folium_map_template: str | None,
 ) -> None:
     total = len(days) * len(deadlines) * len(resolutions)
@@ -282,7 +275,6 @@ def run_grid(
             resolution=int(resolution),
             history_days=list(history_days) if history_days is not None else None,
             neighbor_radius=int(neighbor_radius),
-            missing_policy=missing_policy,
             force=bool(force),
         )
 
@@ -291,10 +283,10 @@ def run_grid(
             result.summary.to_csv(summary_path, index=False)
             LOGGER.info("Wrote summary to %s", summary_path)
 
-        target_path = _format_template(export_target_template, context)
-        if target_path is not None:
-            result.target.to_csv(target_path, index=False)
-            LOGGER.info("Wrote target to %s", target_path)
+        lookup_path = _format_template(export_lookup_template, context)
+        if lookup_path is not None:
+            result.lookup.to_csv(lookup_path, index=False)
+            LOGGER.info("Wrote lookup to %s", lookup_path)
 
         folium_path = _format_template(folium_map_template, context)
         if folium_path is not None:
@@ -312,7 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     export_summary_template = args.export_summary or DEFAULT_EXPORT_SUMMARY_TEMPLATE
-    export_target_template = args.export_target or DEFAULT_EXPORT_TARGET_TEMPLATE
+    export_lookup_template = args.export_lookup or DEFAULT_EXPORT_LOOKUP_TEMPLATE
 
     run_grid(
         days=args.days,
@@ -322,12 +314,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         jobs_pattern=str(args.jobs_pattern),
         timestamp_column=str(args.timestamp_column),
         neighbor_radius=int(args.neighbor_radius),
-        missing_policy=str(args.missing_policy),
         history_days=args.history_days,
         cache_dir=args.cache_dir,
         force=bool(args.force),
         export_summary_template=export_summary_template,
-        export_target_template=export_target_template,
+        export_lookup_template=export_lookup_template,
         folium_map_template=args.folium_map,
     )
 

@@ -9,9 +9,9 @@ day.  It performs three high-level tasks:
 2. Bucket historical HD samples by the H3 cells of the sender and recipient and
    compute summary statistics for each observed pair.
 3. Join the target day's jobs against these aggregates, optionally searching
-   neighbouring cells or falling back to the original HD duals when a pair is
-   missing.  The enriched dataset can then be fed into dispatch simulations or
-   exported for analysis.
+   neighbouring cells. Unmatched pairs are filled with zeroes so the runtime
+   table covers every job. The enriched dataset can then be fed into dispatch
+   simulations or exported for analysis.
 
 The script exposes a command-line interface but is also structured so the core
 functions can be unit-tested in isolation.
@@ -250,14 +250,12 @@ def match_average_duals(
     summary: "pd.DataFrame",
     *,
     neighbor_radius: int = 0,
-    missing_policy: str = "hd",
 ) -> pd.DataFrame:
-    """Attach average-dual estimates to ``target`` using ``summary``."""
+    """Attach average-dual estimates to ``target`` using ``summary``.
 
-    allowed_policies = {"hd", "zero", "nan"}
-    if missing_policy not in allowed_policies:
-        options = ", ".join(sorted(allowed_policies))
-        raise ValueError(f"missing_policy must be one of: {options}")
+    Neighbour search is optional; unresolved pairs fall back to zero to ensure
+    the runtime lookup covers every target-day job.
+    """
 
     required = {"sender_hex", "recipient_hex", "hindsight_dual"}
     missing = required.difference(target.columns)
@@ -295,15 +293,8 @@ def match_average_duals(
                     break
 
         if value is None:
-            if missing_policy == "hd":
-                value = float(row.hindsight_dual)
-                source = "hd_fallback"
-            elif missing_policy == "zero":
-                value = 0.0
-                source = "zero_fallback"
-            else:
-                value = float("nan")
-                source = "missing"
+            value = 0.0
+            source = "zero_fallback"
 
         matched_duals.append(float(value))
         sources.append(source)
@@ -368,9 +359,8 @@ def ensure_hd_cache(
 
 @dataclass
 class PipelineResult:
-    target: pd.DataFrame
-    history: pd.DataFrame
     summary: pd.DataFrame
+    lookup: pd.DataFrame
 
 
 def build_average_duals(
@@ -384,7 +374,6 @@ def build_average_duals(
     resolution: int,
     history_days: Sequence[int] | None,
     neighbor_radius: int,
-    missing_policy: str,
     force: bool = False,
 ) -> PipelineResult:
     _pd = _require_pandas()
@@ -431,7 +420,6 @@ def build_average_duals(
         history_frame = _pd.concat(history_frames, ignore_index=True)
         summary = aggregate_by_hex(history_frame)
     else:
-        history_frame = _pd.DataFrame(columns=target_frame.columns)
         summary = _pd.DataFrame(
             columns=["sender_hex", "recipient_hex", "mean_dual", "std_dual", "count", "type"]
         )
@@ -440,7 +428,17 @@ def build_average_duals(
         target_frame,
         summary,
         neighbor_radius=neighbor_radius,
-        missing_policy=missing_policy,
+    )
+
+    target_types = [
+        str((row.sender_hex, row.recipient_hex))
+        for row in enriched_target.itertuples(index=False)
+    ]
+    lookup = (
+        enriched_target.assign(type=target_types)
+        .groupby("type", as_index=False)["ad_mean"]
+        .mean()
+        .rename(columns={"ad_mean": "mean_dual"})
     )
 
     elapsed = time.perf_counter() - start
@@ -448,7 +446,7 @@ def build_average_duals(
         "Processed day %d with %d history days (resolution=%d) in %.2fs"
         % (day, len(history_days), resolution, elapsed)
     )
-    return PipelineResult(target=enriched_target, history=history_frame, summary=summary)
+    return PipelineResult(summary=summary, lookup=lookup)
 
 
 def save_summary_map(summary: "pd.DataFrame", output: Path) -> None:
@@ -540,12 +538,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Radius for neighbour search when a hex pair is missing",
     )
     parser.add_argument(
-        "--missing-policy",
-        choices=["hd", "zero", "nan"],
-        default="hd",
-        help="Fallback when a hex pair has no historical average",
-    )
-    parser.add_argument(
         "--history-days",
         type=_parse_day_list,
         help="Comma-separated list of history days (default: all except target)",
@@ -576,16 +568,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--export-ad-csv",
         type=Path,
         help="Optional CSV path for a runtime-ready average-dual lookup",
-    )
-    parser.add_argument(
-        "--export-ad-npz",
-        type=Path,
-        help="Optional NPZ path for a runtime-ready average-dual lookup",
-    )
-    parser.add_argument(
-        "--export-target",
-        type=Path,
-        help="Optional CSV path for the target day with attached AD means",
     )
     parser.add_argument(
         "--folium-map",
@@ -624,7 +606,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolution=int(args.resolution),
         history_days=args.history_days,
         neighbor_radius=int(args.neighbor_radius),
-        missing_policy=str(args.missing_policy),
         force=bool(args.force),
     )
 
@@ -634,15 +615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Wrote summary table to {summary_path}")
 
     ad_csv_path = args.export_ad_csv or (default_export_dir / f"{stem}_lookup.csv")
-    export_average_duals_csv(result.summary, ad_csv_path)
-
-    ad_npz_path = args.export_ad_npz or (default_export_dir / f"{stem}_lookup.npz")
-    export_average_duals_npz(result.summary, ad_npz_path)
-
-    target_path = args.export_target or (default_export_dir / f"{stem}_full.csv")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    result.target.to_csv(target_path, index=False)
-    print(f"Wrote target day records to {target_path}")
+    export_average_duals_csv(result.lookup, ad_csv_path)
 
     if args.folium_map:
         save_summary_map(result.summary, args.folium_map)
