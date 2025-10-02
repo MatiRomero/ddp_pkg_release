@@ -71,7 +71,7 @@ class BuildAverageDualsTest(unittest.TestCase):
             self.assertAlmostEqual(float(rows_by_type[type_a]["std_dev"]), 1.0)
             self.assertAlmostEqual(float(rows_by_type[type_b]["std_dev"]), 0.0)
 
-            table = load_average_duals(str(out_path))
+            table = load_average_duals(str(out_path), as_table=False)
             mapper = load_average_dual_mapper("ddp.mappings.uniform_grid:job_mapping")
             jobs = [
                 Job(origin=(0.12, 0.18), dest=(0.47, 0.52), timestamp=0.0),

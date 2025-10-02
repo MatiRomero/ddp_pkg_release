@@ -127,7 +127,7 @@ class MeituanAverageDualsTest(unittest.TestCase):
 
             expected = {row.type: float(row.mean_dual) for row in summary.itertuples(index=False)}
 
-            csv_loaded = load_average_duals(str(csv_path))
+            csv_loaded = load_average_duals(str(csv_path), as_table=False)
 
             self.assertEqual(csv_loaded, expected)
 

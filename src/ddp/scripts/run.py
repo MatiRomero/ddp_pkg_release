@@ -6,8 +6,9 @@ import csv
 import importlib
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence, Literal
 
 import numpy as np
 
@@ -28,7 +29,33 @@ class AverageDualError(RuntimeError):
     """Raised when average-dual shadows cannot be constructed."""
 
 
-def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
+@dataclass(frozen=True)
+class AverageDualTable:
+    """Container for precomputed average-dual data.
+
+    Attributes
+    ----------
+    format:
+        Discriminator describing the underlying representation. ``"job"``
+        indicates an array already aligned to job indices, while ``"type"``
+        indicates a sparse lookup keyed by serialized type identifiers.
+    by_job:
+        NumPy array of per-job values when the source file is job aligned.
+    by_type:
+        Mapping from serialized type identifiers to average dual values when the
+        source file contains aggregated entries.
+    """
+
+    format: Literal["job", "type"]
+    by_job: np.ndarray | None = None
+    by_type: Mapping[str, float] | None = None
+
+
+def load_average_duals(
+    path: str,
+    *,
+    as_table: bool = True,
+) -> AverageDualTable | dict[str, float] | np.ndarray:
     """Load an average-dual lookup table from ``path``.
 
     Supported formats are ``.npz`` archives containing parallel ``types`` and
@@ -37,10 +64,13 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
     *job-aligned* CSV/TSV files that provide one of the job-index headers
     (``job_index`` or ``index``) alongside ``mean_dual``/``ad_mean``/``dual``
     values. Header matching is case-insensitive and ignores surrounding
-    whitespace. Type-based files return a mapping keyed by the serialized type,
-    while job-aligned files return a NumPy array ordered by job index. Duplicate
-    entries overwrite previous values. A ``ValueError`` is raised when required
-    headers are missing or indices are inconsistent.
+    whitespace. When ``as_table`` is ``True`` (the default) an
+    :class:`AverageDualTable` is returned with either the ``by_job`` or
+    ``by_type`` payload populated depending on the input. Setting ``as_table``
+    to ``False`` preserves the legacy behaviour of returning the raw payload
+    (NumPy array for job-aligned tables, ``dict`` for type-based tables).
+    Duplicate entries overwrite previous values. A ``ValueError`` is raised when
+    required headers are missing or indices are inconsistent.
     """
 
     ext = os.path.splitext(path)[1].lower()
@@ -60,6 +90,9 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
                 raise ValueError("Mismatch between 'types' and dual arrays in archive")
             for key, value in zip(types, means):
                 table[str(key)] = float(value)
+        table = {key: float(value) for key, value in table.items()}
+        if as_table:
+            return AverageDualTable(format="type", by_type=table)
         return table
 
     with open(path, newline="") as handle:
@@ -112,7 +145,10 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
                 job_values[job_idx] = value
 
             if not job_values:
-                return np.zeros(0, dtype=float)
+                array = np.zeros(0, dtype=float)
+                if as_table:
+                    return AverageDualTable(format="job", by_job=array)
+                return array
 
             max_index = max(job_values)
             missing = [idx for idx in range(max_index + 1) if idx not in job_values]
@@ -124,7 +160,10 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
                 )
 
             ordered = [job_values[idx] for idx in range(max_index + 1)]
-            return np.asarray(ordered, dtype=float)
+            array = np.asarray(ordered, dtype=float)
+            if as_table:
+                return AverageDualTable(format="job", by_job=array)
+            return array
 
         if "type" not in lowered:
             raise ValueError(
@@ -145,6 +184,9 @@ def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
             except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
                 raise ValueError(f"Invalid dual value for type '{type_name}'") from exc
             table[type_name] = value
+
+    if as_table:
+        return AverageDualTable(format="type", by_type=table)
     return table
 
 
@@ -168,7 +210,9 @@ def load_average_dual_mapper(spec: str) -> Callable[[Job], str | None]:
 
 def _load_precomputed_ad_shadows(
     jobs: Sequence[Job],
-    table: Mapping[object, float] | Sequence[float] | np.ndarray,
+    table: AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray,
+    *,
+    mapper: Callable[[Job], str | None] | None = None,
 ) -> np.ndarray:
     """Return the precomputed average-dual shadows for ``jobs``.
 
@@ -181,6 +225,49 @@ def _load_precomputed_ad_shadows(
     n = len(jobs)
     if n == 0:
         return np.zeros(0, dtype=float)
+
+    if isinstance(table, AverageDualTable):
+        if table.by_job is not None:
+            array = np.asarray(table.by_job, dtype=float)
+            if array.shape[0] != n:
+                raise AverageDualError(
+                    "Average-dual array does not match the number of jobs"
+                )
+            return array
+
+        if table.by_type is not None:
+            if mapper is None:
+                raise AverageDualError(
+                    "Type-indexed average-dual tables require an --ad-mapping function"
+                )
+            lookup = table.by_type
+            shadows = np.empty(n, dtype=float)
+            missing_indices: list[int] = []
+            missing_types: list[str] = []
+            for idx, job in enumerate(jobs):
+                type_key = mapper(job)
+                if type_key is None:
+                    missing_indices.append(idx)
+                    missing_types.append("<none>")
+                    continue
+                str_key = str(type_key)
+                value = lookup.get(str_key)
+                if value is None:
+                    missing_indices.append(idx)
+                    missing_types.append(str_key)
+                    continue
+                shadows[idx] = float(value)
+
+            if missing_indices:
+                formatted = ", ".join(
+                    f"{idx}:{type_name}" for idx, type_name in zip(missing_indices, missing_types)
+                )
+                raise AverageDualError(
+                    "Missing average-dual values for mapped job types: " + formatted
+                )
+            return shadows
+
+        raise AverageDualError("Average-dual table did not contain job or type data")
 
     if isinstance(table, np.ndarray):
         if table.shape[0] != n:
@@ -313,7 +400,12 @@ def run_instance(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None = None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None = None,
+    ad_mapper: Callable[[Job], str | None] | None = None,
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
@@ -330,8 +422,9 @@ def run_instance(
 
     When ``"ad"`` is present in ``shadows`` the optional ``ad_duals`` lookup must
     already contain the runtime shadows aligned with ``jobs``. Provide either a
-    sequence/NumPy array whose length matches ``len(jobs)`` or a mapping keyed by
-    the ``0``-based job index. Missing entries raise :class:`AverageDualError`.
+    job-aligned array/sequence, an :class:`AverageDualTable` with ``by_job`` set,
+    or a table keyed by type strings alongside ``ad_mapper`` to translate jobs to
+    type identifiers. Missing entries raise :class:`AverageDualError`.
     """
 
     jobs = list(jobs)
@@ -392,7 +485,7 @@ def run_instance(
                 raise AverageDualError(
                     "Average-dual shadows require the precomputed 'ad_duals' table."
                 )
-            sp_base = _load_precomputed_ad_shadows(jobs, ad_duals)
+            sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
         else:
             if print_table:
                 print(f"[skip] Unknown shadow: {sh}")
@@ -635,7 +728,12 @@ def run_once(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tie_breaker: str = "distance",
-    ad_duals: Mapping[object, float] | Sequence[float] | np.ndarray | None = None,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None = None,
+    ad_mapper: Callable[[Job], str | None] | None = None,
 ) -> dict:
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
@@ -674,7 +772,7 @@ def run_once(
     elif shadow == "ad":
         if ad_duals is None:
             raise AverageDualError("Average-dual shadows require the 'ad_duals' table")
-        sp_base = _load_precomputed_ad_shadows(jobs, ad_duals)
+        sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
     else:
         raise ValueError(f"Unknown shadow: {shadow}")
 
@@ -902,6 +1000,12 @@ def main() -> None:
             "Path to an average-dual table (.npz or CSV). Required when --shadows includes 'ad'."
         ),
     )
+    p.add_argument(
+        "--ad-mapping",
+        help=(
+            "Module:function resolving to an average-dual mapper used with type-indexed tables."
+        ),
+    )
     args = p.parse_args()
 
     origins: np.ndarray
@@ -955,9 +1059,24 @@ def main() -> None:
     dispatch_list = [d.strip() for d in args.dispatch.split(",") if d.strip()]
 
     ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
+    ad_mapper: Callable[[Job], str | None] | None = None
+    if args.ad_mapping:
+        try:
+            ad_mapper = load_average_dual_mapper(args.ad_mapping)
+        except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
+            raise SystemExit(f"failed to resolve --ad-mapping: {exc}") from exc
     if "ad" in shadow_list:
         if ad_table is None:
             raise SystemExit("--shadows contains 'ad' so --ad_duals is required")
+        if (
+            isinstance(ad_table, AverageDualTable)
+            and ad_table.by_job is None
+            and ad_table.by_type is not None
+            and ad_mapper is None
+        ):
+            raise SystemExit("type-indexed average-dual tables require --ad-mapping")
+    elif ad_mapper is not None:
+        raise SystemExit("--ad-mapping can only be used when --shadows contains 'ad'")
 
     run_instance(
         jobs=jobs,
@@ -977,6 +1096,7 @@ def main() -> None:
         tau_plus=args.plus_tau,
         tie_breaker=args.tie_breaker,
         ad_duals=ad_table,
+        ad_mapper=ad_mapper,
     )
 
 
