@@ -190,6 +190,9 @@ def _run_sweep_from_trial_jobs(
     | None,
     ad_mapper: Callable[[Job], str | None] | None,
     trial_jobs: Sequence[tuple[int, Mapping[str, Sequence[Job]]]],
+    trial_ad_duals: Mapping[int, AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray]
+    | Sequence[AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray]
+    | None = None,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
@@ -238,8 +241,15 @@ def _run_sweep_from_trial_jobs(
                             )
                         values: list[float] = []
 
-                        for seed, job_variants in trial_jobs:
+                        for trial_index, (seed, job_variants) in enumerate(trial_jobs):
                             jobs = job_variants[geom.name]
+                            ad_duals_override = ad_duals
+                            if trial_ad_duals is not None:
+                                if isinstance(trial_ad_duals, Mapping):
+                                    ad_duals_override = trial_ad_duals.get(seed, ad_duals_override)
+                                else:
+                                    if 0 <= trial_index < len(trial_ad_duals):
+                                        ad_duals_override = trial_ad_duals[trial_index]
                             result = run_instance(
                                 jobs=jobs,
                                 d=d,
@@ -253,7 +263,7 @@ def _run_sweep_from_trial_jobs(
                                 print_matches=False,
                                 gamma=float(gamma),
                                 tau=float(tau),
-                                ad_duals=ad_duals,
+                                ad_duals=ad_duals_override,
                                 ad_mapper=ad_mapper,
                             )
                             row = result["rows"][0]
