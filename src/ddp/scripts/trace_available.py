@@ -105,7 +105,7 @@ def _prepare_dispatch(
         sim_shadow: np.ndarray | None = None
     else:
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[policy]
-        tau_eff = gamma_eff if shadow_label == "naive" else tau
+        tau_eff = tau
         sp = sp * gamma_eff - tau_eff
         weight_fn = make_weight_fn(reward_fn, sp)
         sim_shadow = sp
@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
         default=0.0,
         help=(
             "Additive offset subtracted from the scaled shadow potentials before dispatch. "
-            "Naive shadows automatically use tau=gamma."
+            "Applies uniformly to all shadow families."
         ),
     )
     parser.add_argument(

@@ -415,11 +415,10 @@ def run_instance(
     Shadow potentials can be scaled and shifted via ``gamma`` (multiplicative)
     and ``tau`` (additive) before being used by the dispatch policies. The
     effective vector is computed as ``sp = base * gamma - tau`` so the additive
-    term discounts the scaled shadow. When ``gamma`` is omitted (``None``) a
+    term discounts the scaled shadow. The additive shift applies uniformly to all
+    shadow families, including ``"naive"``. When ``gamma`` is omitted (``None``) a
     policy-specific default is used: ``1`` for ``greedy``/``greedy+``, ``0.5``
-    for ``batch``/``rbatch``, and ``1`` for the ``+`` variants. Naive shadows
-    override the additive component with ``tau = gamma`` so their scaled values
-    collapse to ``-gamma``. The ``+`` variants use the
+    for ``batch``/``rbatch``, and ``1`` for the ``+`` variants. The ``+`` variants use the
     :func:`make_weight_fn_latest_shadow` helper, which subtracts only the later
     job's shadow ("late-arrival" adjustment). Their scaling defaults to
     ``gamma_plus = 1`` with optional ``tau_plus`` shifts, and the effective
@@ -502,7 +501,7 @@ def run_instance(
             t_run = time.perf_counter()
             if disp == "greedy":
                 gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = gamma_eff if sh == "naive" else tau
+                tau_eff = tau
                 sp = np.array(sp_base, dtype=float, copy=True)
                 sp = sp * gamma_eff - tau_eff
                 score_fn = make_local_score(reward_fn, sp)
@@ -520,7 +519,7 @@ def run_instance(
                 )
             elif disp == "greedy+":
                 gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = gamma_eff if sh == "naive" else tau
+                tau_eff = tau
                 sp = np.array(sp_base, dtype=float, copy=True)
                 sp = sp * gamma_eff - tau_eff
                 score_fn = make_local_score(reward_fn, sp)
@@ -538,7 +537,7 @@ def run_instance(
                 )
             elif disp == "batch":
                 gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = gamma_eff if sh == "naive" else tau
+                tau_eff = tau
                 sp = np.array(sp_base, dtype=float, copy=True)
                 sp = sp * gamma_eff - tau_eff
                 score_fn = make_local_score(reward_fn, sp)
@@ -576,7 +575,7 @@ def run_instance(
                 )
             elif disp == "rbatch":
                 gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = gamma_eff if sh == "naive" else tau
+                tau_eff = tau
                 sp = np.array(sp_base, dtype=float, copy=True)
                 sp = sp * gamma_eff - tau_eff
                 score_fn = make_local_score(reward_fn, sp)
@@ -755,7 +754,8 @@ def run_once(
 
     The optional ``gamma``/``tau`` parameters mirror those in :func:`run_instance`
     with the same defaults (policy-specific ``gamma`` and ``tau`` subtracted
-    from the scaled shadows). For ``dispatch="batch+"`` or
+    from the scaled shadows, with the additive offset applied to every shadow
+    family). For ``dispatch="batch+"`` or
     ``dispatch="rbatch+"`` the weight computation subtracts only the later job's
     shadow, producing ``reward(i, j) - s_late``. ``gamma_plus`` defaults to 1 (and
     can be overridden) while ``tau_plus`` still shifts the late-arrival shadows.
@@ -796,7 +796,7 @@ def run_once(
     t_run = time.perf_counter()
     if dispatch == "greedy":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = gamma_eff if shadow == "naive" else tau
+        tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff - tau_eff
         score_fn = make_local_score(reward_fn, sp)
@@ -814,7 +814,7 @@ def run_once(
         )
     elif dispatch == "greedy+":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = gamma_eff if shadow == "naive" else tau
+        tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff - tau_eff
         score_fn = make_local_score(reward_fn, sp)
@@ -832,7 +832,7 @@ def run_once(
         )
     elif dispatch == "batch":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = gamma_eff if shadow == "naive" else tau
+        tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff - tau_eff
         score_fn = make_local_score(reward_fn, sp)
@@ -870,7 +870,7 @@ def run_once(
         )
     elif dispatch == "rbatch":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = gamma_eff if shadow == "naive" else tau
+        tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff - tau_eff
         score_fn = make_local_score(reward_fn, sp)
@@ -999,8 +999,7 @@ def main() -> None:
         type=float,
         default=0.0,
         help=(
-            "Additive offset subtracted from the scaled shadow potentials before dispatch. "
-            "Naive shadows automatically use tau=gamma."
+            "Additive offset subtracted from the scaled shadow potentials before dispatch."
         ),
     )
     p.add_argument(
