@@ -13,6 +13,7 @@ from ddp.scripts.meituan_average_duals import (
     _parse_day_list,
     _format_deadline,
     build_average_duals,
+    export_job_aligned_duals_csv,
     save_summary_map,
 )
 
@@ -23,6 +24,9 @@ DEFAULT_EXPORT_SUMMARY_TEMPLATE = str(
 )
 DEFAULT_EXPORT_LOOKUP_TEMPLATE = str(
     DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_lookup.csv"
+)
+DEFAULT_EXPORT_JOB_TEMPLATE = str(
+    DEFAULT_EXPORT_BASE / f"{DEFAULT_EXPORT_STEM}_full.csv"
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -201,6 +205,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--export-job-lookup",
+        type=str,
+        help=(
+            "Optional template for CSV path of job-aligned lookup tables "
+            f"(default: {DEFAULT_EXPORT_JOB_TEMPLATE})"
+        ),
+    )
+    parser.add_argument(
         "--folium-map",
         type=str,
         help="Optional template for HTML path of a Folium sender coverage map",
@@ -245,6 +257,7 @@ def run_grid(
     force: bool,
     export_summary_template: str | None,
     export_lookup_template: str | None,
+    export_job_template: str | None,
     folium_map_template: str | None,
 ) -> None:
     total = len(days) * len(deadlines) * len(resolutions)
@@ -287,7 +300,12 @@ def run_grid(
         if lookup_path is not None:
             result.lookup.to_csv(lookup_path, index=False)
             LOGGER.info("Wrote lookup to %s", lookup_path)
-
+        
+        job_path = _format_template(export_job_template, context)
+        if job_path is not None:
+            export_job_aligned_duals_csv(result.job_lookup, job_path)
+            LOGGER.info("Wrote job lookup to %s", job_path)
+        
         folium_path = _format_template(folium_map_template, context)
         if folium_path is not None:
             save_summary_map(result.summary, folium_path)
@@ -305,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     export_summary_template = args.export_summary or DEFAULT_EXPORT_SUMMARY_TEMPLATE
     export_lookup_template = args.export_lookup or DEFAULT_EXPORT_LOOKUP_TEMPLATE
+    export_job_template = args.export_job_lookup or DEFAULT_EXPORT_JOB_TEMPLATE
 
     run_grid(
         days=args.days,
@@ -319,6 +338,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         force=bool(args.force),
         export_summary_template=export_summary_template,
         export_lookup_template=export_lookup_template,
+        export_job_template=export_job_template,
         folium_map_template=args.folium_map,
     )
 
