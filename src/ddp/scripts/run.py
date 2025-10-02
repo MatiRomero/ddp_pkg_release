@@ -28,20 +28,23 @@ class AverageDualError(RuntimeError):
     """Raised when average-dual shadows cannot be constructed."""
 
 
-def load_average_duals(path: str) -> dict[str, float]:
+def load_average_duals(path: str) -> dict[str, float] | np.ndarray:
     """Load an average-dual lookup table from ``path``.
 
-    The loader accepts either ``.npz`` archives containing parallel ``types`` and
-    ``mean_dual`` (or ``duals``) arrays or delimited text/CSV files with at least
-    ``type`` and ``mean_dual`` columns. Types are coerced to ``str`` and duplicate
-    entries overwrite previous values. ``ValueError`` is raised when expected
-    columns are absent.
+    Supported formats are ``.npz`` archives containing parallel ``types`` and
+    ``mean_dual`` (or ``duals``) arrays, *type-based* CSV/TSV files with
+    ``type``/``mean_dual`` (or ``dual``) columns, and *job-aligned* CSV/TSV files
+    that provide one of the job-index headers (``job_index`` or ``index``)
+    alongside ``mean_dual``/``dual`` values. Type-based files return a mapping
+    keyed by the serialized type, while job-aligned files return a NumPy array
+    ordered by job index. Duplicate entries overwrite previous values. A
+    ``ValueError`` is raised when required headers are missing or indices are
+    inconsistent.
     """
 
     ext = os.path.splitext(path)[1].lower()
-    table: dict[str, float] = {}
-
     if ext == ".npz":
+        table: dict[str, float] = {}
         with np.load(path, allow_pickle=False) as data:
             if "types" not in data:
                 raise ValueError("Average-dual archive must contain a 'types' array")
@@ -63,13 +66,63 @@ def load_average_duals(path: str) -> dict[str, float]:
         if reader.fieldnames is None:
             raise ValueError("Average-dual CSV must include a header row")
         lowered = {name.lower(): name for name in reader.fieldnames}
-        if "type" not in lowered:
-            raise ValueError("Average-dual CSV missing 'type' column")
-        if "mean_dual" not in lowered and "dual" not in lowered:
-            raise ValueError("Average-dual CSV missing 'mean_dual' (or 'dual') column")
-        type_key = lowered["type"]
+        job_index_key = next(
+            (lowered[column] for column in ("job_index", "index") if column in lowered),
+            None,
+        )
         dual_key = lowered.get("mean_dual", lowered.get("dual"))
-        assert dual_key is not None  # for mypy
+        if dual_key is None:
+            raise ValueError(
+                "Average-dual CSV missing 'mean_dual' (or 'dual') column"
+            )
+
+        if job_index_key is not None:
+            job_values: dict[int, float] = {}
+            for row in reader:
+                if not row:
+                    continue
+                raw_index = row[job_index_key].strip()
+                if not raw_index:
+                    continue
+                try:
+                    job_idx = int(raw_index)
+                except ValueError as exc:
+                    raise ValueError(
+                        "Job-aligned average-dual CSV must contain integer job indices"
+                    ) from exc
+                if job_idx < 0:
+                    raise ValueError("Job indices must be non-negative")
+                try:
+                    value = float(row[dual_key])
+                except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                    raise ValueError(
+                        f"Invalid dual value for job index {job_idx}"
+                    ) from exc
+                job_values[job_idx] = value
+
+            if not job_values:
+                return np.zeros(0, dtype=float)
+
+            max_index = max(job_values)
+            missing = [idx for idx in range(max_index + 1) if idx not in job_values]
+            if missing:
+                missing_str = ", ".join(str(idx) for idx in missing)
+                raise ValueError(
+                    "Job-aligned average-dual CSV missing values for indices: "
+                    + missing_str
+                )
+
+            ordered = [job_values[idx] for idx in range(max_index + 1)]
+            return np.asarray(ordered, dtype=float)
+
+        if "type" not in lowered:
+            raise ValueError(
+                "Average-dual CSV must include a 'type' column or one of the job index "
+                "columns: 'job_index', 'index'"
+            )
+
+        table: dict[str, float] = {}
+        type_key = lowered["type"]
         for row in reader:
             if not row:
                 continue
