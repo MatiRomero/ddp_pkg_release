@@ -147,6 +147,7 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
     _require_columns(new_rows, TRIAL_KEY_COLUMNS, label="New CSV")
 
     new_rows = new_rows.copy()
+    has_opt_total = "opt_total" in new_rows.columns
     key_index = pd.MultiIndex.from_frame(_normalized_trial_keys(new_rows))
     opt_from_lookup = lookup.reindex(key_index)
 
@@ -189,7 +190,8 @@ def _apply_opt_metrics(new_rows: pd.DataFrame, lookup: pd.Series) -> pd.DataFram
     ratio_opt = savings.divide(opt_total_filled)
     ratio_opt = ratio_opt.where(opt_total_filled != 0)
 
-    new_rows["opt_total"] = opt_total_filled
+    if has_opt_total:
+        new_rows["opt_total"] = opt_total_filled
     new_rows["opt_gap"] = opt_gap
     new_rows["ratio_opt"] = ratio_opt
 
