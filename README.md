@@ -185,6 +185,26 @@ The same arguments work with the repository wrapper
 (``python scripts/run_meituan_shadow_sweep.py ...``) when you prefer calling the
 package CLI from the project root.
 
+### Parallel synthetic gamma/tau sweeps
+
+When sweeping large gamma/tau grids across multiple geometries and shadow
+families, the serial ``ddp-shadow-sweep`` runner can become CPU bound. The
+parallel variant, ``ddp-shadow-sweep-parallel``, accepts the same arguments but
+dispatches each ``(geometry, shadow, tau, gamma, trial)`` bundle to a separate
+worker process. Use ``--workers`` to control concurrency (``0`` or omitting the
+flag uses ``os.cpu_count()``, while ``--workers 1`` replicates the serial
+execution order). CSV summaries and heatmap figures match the serial output so
+downstream tooling (e.g., ``ddp-plot-shadow-sweep``) continues to work.
+
+```bash
+python -m ddp.scripts.shadow_sweep_parallel \
+  --n 100 --trials 20 --dispatch greedy --metric savings \
+  --gamma-values 0.5:1.5:0.25 --tau-values -2:2:1 \
+  --geometries plane,line_y0 --shadows naive,pb --workers 8 \
+  --out results/shadow_parallel_heatmap.png \
+  --csv results/shadow_parallel_summary.csv
+```
+
 ## Aggregate and Plot Results
 
 To run multiple trials and aggregate results across all shadow × dispatch combinations:

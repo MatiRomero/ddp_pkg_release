@@ -99,6 +99,92 @@ ALLOWED_METRICS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class SweepCombinationResult:
+    """Aggregate statistics for a single geometry/shadow/gamma/tau combination."""
+
+    mean: float
+    std: float
+    trials: int
+    valid_trials: int
+
+
+def evaluate_sweep_combination(
+    *,
+    geometry: str,
+    shadow: str,
+    gamma: float,
+    tau: float,
+    d: float,
+    dispatch: str,
+    metric: str,
+    trial_jobs: Sequence[tuple[int, Sequence[Job]]],
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None,
+    ad_mapper: Callable[[Job], str | None] | None,
+    trial_ad_duals: Mapping[
+        int,
+        AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray,
+    ]
+    | Sequence[
+        AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray
+    ]
+    | None = None,
+    progress: Callable[[int], None] | None = None,
+) -> SweepCombinationResult:
+    """Run all trials for a specific combination and aggregate the metric."""
+
+    values: list[float] = []
+    for trial_index, (seed, jobs) in enumerate(trial_jobs):
+        ad_duals_override = ad_duals
+        if trial_ad_duals is not None:
+            if isinstance(trial_ad_duals, Mapping):
+                ad_duals_override = trial_ad_duals.get(seed, ad_duals_override)
+            else:
+                if 0 <= trial_index < len(trial_ad_duals):
+                    ad_duals_override = trial_ad_duals[trial_index]
+        result = run_instance(
+            jobs=jobs,
+            d=d,
+            shadows=[shadow],
+            dispatches=[dispatch],
+            seed=seed,
+            with_opt=False,
+            save_csv="",
+            print_table=False,
+            return_details=False,
+            print_matches=False,
+            gamma=float(gamma),
+            tau=float(tau),
+            ad_duals=ad_duals_override,
+            ad_mapper=ad_mapper,
+        )
+        row = result["rows"][0]
+        metric_value = _extract_metric(row, metric)
+        if metric_value is not None:
+            values.append(metric_value)
+        if progress is not None:
+            progress(1)
+
+    trials = len(trial_jobs)
+    if values:
+        mean_val = statistics.fmean(values)
+        std_val = statistics.stdev(values) if len(values) > 1 else 0.0
+    else:
+        mean_val = float("nan")
+        std_val = float("nan")
+
+    return SweepCombinationResult(
+        mean=mean_val,
+        std=std_val,
+        trials=trials,
+        valid_trials=len(values),
+    )
+
+
 def _parse_values(spec: str) -> list[float]:
     """Parse comma lists or inclusive ``start:stop:step`` ranges into floats."""
 
@@ -198,6 +284,10 @@ def _run_sweep_from_trial_jobs(
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
 
     trial_jobs = list(trial_jobs)
+    geometry_trial_jobs: dict[str, list[tuple[int, Sequence[Job]]]] = {
+        geom.name: [(seed, job_variants[geom.name]) for seed, job_variants in trial_jobs]
+        for geom in geometries
+    }
 
     heatmap: dict[str, dict[str, np.ndarray]] = {
         geom.name: {
@@ -239,50 +329,29 @@ def _run_sweep_from_trial_jobs(
                             progress_bar.set_description(
                                 f"{geom.name}/{shadow} γ={_format_value(float(gamma))} τ={_format_value(float(tau))}"
                             )
-                        values: list[float] = []
+                        combo_result = evaluate_sweep_combination(
+                            geometry=geom.name,
+                            shadow=shadow,
+                            gamma=float(gamma),
+                            tau=float(tau),
+                            d=d,
+                            dispatch=dispatch,
+                            metric=metric,
+                            trial_jobs=geometry_trial_jobs[geom.name],
+                            ad_duals=ad_duals,
+                            ad_mapper=ad_mapper,
+                            trial_ad_duals=trial_ad_duals,
+                            progress=progress_bar.update if show_progress else None,
+                        )
 
-                        for trial_index, (seed, job_variants) in enumerate(trial_jobs):
-                            jobs = job_variants[geom.name]
-                            ad_duals_override = ad_duals
-                            if trial_ad_duals is not None:
-                                if isinstance(trial_ad_duals, Mapping):
-                                    ad_duals_override = trial_ad_duals.get(seed, ad_duals_override)
-                                else:
-                                    if 0 <= trial_index < len(trial_ad_duals):
-                                        ad_duals_override = trial_ad_duals[trial_index]
-                            result = run_instance(
-                                jobs=jobs,
-                                d=d,
-                                shadows=[shadow],
-                                dispatches=[dispatch],
-                                seed=seed,
-                                with_opt=False,
-                                save_csv="",
-                                print_table=False,
-                                return_details=False,
-                                print_matches=False,
-                                gamma=float(gamma),
-                                tau=float(tau),
-                                ad_duals=ad_duals_override,
-                                ad_mapper=ad_mapper,
-                            )
-                            row = result["rows"][0]
-                            metric_value = _extract_metric(row, metric)
-                            if metric_value is not None:
-                                values.append(metric_value)
-                            progress_bar.update()
-
-                        if values:
-                            mean_val = statistics.fmean(values)
-                            std_val = statistics.stdev(values) if len(values) > 1 else 0.0
-                            heatmap[geom.name][shadow][tau_index, gamma_index] = mean_val
-                            if best_mean is None or mean_val > best_mean:
-                                best_mean = mean_val
-                                best_gamma = float(gamma)
-                                best_tau = float(tau)
-                        else:
-                            mean_val = float("nan")
-                            std_val = float("nan")
+                        heatmap[geom.name][shadow][tau_index, gamma_index] = combo_result.mean
+                        if (
+                            combo_result.valid_trials > 0
+                            and (best_mean is None or combo_result.mean > best_mean)
+                        ):
+                            best_mean = combo_result.mean
+                            best_gamma = float(gamma)
+                            best_tau = float(tau)
 
                         records.append(
                             {
@@ -292,10 +361,10 @@ def _run_sweep_from_trial_jobs(
                                 "tau": float(tau),
                                 "dispatch": dispatch,
                                 "metric": metric,
-                                "mean": mean_val,
-                                "std": std_val,
+                                "mean": combo_result.mean,
+                                "std": combo_result.std,
                                 "trials": trials,
-                                "valid_trials": len(values),
+                                "valid_trials": combo_result.valid_trials,
                             }
                         )
 
