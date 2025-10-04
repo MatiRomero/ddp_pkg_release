@@ -9,15 +9,21 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 DEFAULT_DAYS: Sequence[str] = (
-    "20210301",
-    "20210302",
-    "20210303",
+    "0",
+    "1",
+    # "2",
+    # "3",
+    # "4",
+    # "5",
+    # "6",
+    # "7",
 )
-DEFAULT_DEADLINES: Sequence[str] = ("300", "600")
-DEFAULT_RESOLUTIONS: Sequence[str] = ("7", "8")
+# DEFAULT_DEADLINES: Sequence[str] = ("90","120","150","180","210","240","270","300")
+DEFAULT_DEADLINES: Sequence[str] = ("5","15")
+DEFAULT_RESOLUTIONS: Sequence[str] = ("7", "8", "9", "10")
 DEFAULT_DATA_DIR = "data"
 DEFAULT_JOBS_PATTERN = "meituan_area6_lunchtime_plat10301330_day{day}.csv"
-DEFAULT_EXPORT_DIR = "average_duals_area6"
+DEFAULT_EXPORT_DIR = "data/average_duals_area6"
 
 
 def _parse_sequence(value: Iterable[str]) -> list[str]:
