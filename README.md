@@ -51,6 +51,12 @@ python -m ddp.scripts.meituan_average_duals \
   --export-summary reports/meituan_r8_summary.csv \
   --export-ad-csv reports/meituan_day5_lookup.csv \
   --folium-map reports/meituan_day5_sender_coverage.html
+# Generate a batch config (defaults to Area 6 lunchtime snapshots)
+PYTHONPATH=src python -m ddp.scripts.generate_ad_config
+# Submit the batch to SGE, selecting rows via $SGE_TASK_ID
+qsub -t 1-12:1 -- python -m ddp.scripts.run_ad_from_config --config configs/ad_config.csv
+# Inspect the resolved command locally without running the pipeline
+PYTHONPATH=src python -m ddp.scripts.run_ad_from_config --dry-run
 ```
 
 Average-dual (``ad``) shadows require a *pre-enriched* lookup aligned with the
@@ -126,6 +132,17 @@ coexist; pass `--force` to recompute them. When no explicit export paths are
 supplied, the CLI now writes both `*_lookup.csv` (type-level means) and
 `*_full.csv` (job-level lookup) files under `--export-dir` so downstream
 workflows can reuse either artefact immediately.
+
+For repeated runs across multiple days, deadlines, or H3 resolutions, use the
+`generate_ad_config` helper to export `configs/ad_config.csv`. The generated rows
+default to the Area 6 lunchtime snapshots in `data/` and an
+`average_duals_area6/` export directory, but you can override the days,
+deadlines, resolutions, and paths as needed. Feed the resulting CSV to
+`python -m ddp.scripts.run_ad_from_config`, which selects the row indicated by
+`$SGE_TASK_ID`, ensures the export directory exists, and forwards any additional
+flags (for example `--history-days`) to `meituan_average_duals`. Combine this
+with `qsub -t` to parallelise a full batch on a cluster, or pass `--dry-run` to
+inspect the command locally before launching jobs.
 
 Example end-to-end run on the bundled Meituan sample:
 
