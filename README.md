@@ -183,7 +183,23 @@ python -m ddp.scripts.meituan_shadow_sweep \
 
 The same arguments work with the repository wrapper
 (``python scripts/run_meituan_shadow_sweep.py ...``) when you prefer calling the
-package CLI from the project root.
+package CLI from the project root. For larger sweeps, the parallel variant
+(``ddp.scripts.meituan_shadow_sweep_parallel``) spreads individual
+geometry/shadow/gamma/tau evaluations across a process pool. Use ``--workers``
+to cap the number of processes (default: CPU count), or set ``--workers 1`` to
+force sequential execution.
+
+```bash
+python -m ddp.scripts.meituan_shadow_sweep_parallel \
+  --jobs-csv "data/meituan_city_lunchtime_plat10301330_day0.csv" \
+  --gamma-values 1 \
+  --tau-values 0 \
+  --shadows naive \
+  --workers 4 \
+  --no-progress
+```
+
+This CLI is also available via ``python scripts/run_meituan_shadow_sweep_parallel.py``.
 
 ## Aggregate and Plot Results
 
