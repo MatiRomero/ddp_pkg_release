@@ -100,13 +100,13 @@ def _prepare_dispatch(
     if policy in {"batch+", "rbatch+"}:
         gamma_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_eff = tau_plus if tau_plus is not None else 0.0
-        sp = sp * gamma_eff - tau_eff
+        sp = sp * gamma_eff + tau_eff
         weight_fn = make_weight_fn_latest_shadow(reward_fn, sp)
         sim_shadow: np.ndarray | None = None
     else:
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[policy]
         tau_eff = tau
-        sp = sp * gamma_eff - tau_eff
+        sp = sp * gamma_eff + tau_eff
         weight_fn = make_weight_fn(reward_fn, sp)
         sim_shadow = sp
 
