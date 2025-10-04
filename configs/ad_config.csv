@@ -1,0 +1,13 @@
+day,deadline,resolution,data_dir,jobs_pattern,export_dir
+20210301,300,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210301,300,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210301,600,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210301,600,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210302,300,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210302,300,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210302,600,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210302,600,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210303,300,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210303,300,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210303,600,7,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
+20210303,600,8,data,meituan_area6_lunchtime_plat10301330_day{day}.csv,average_duals_area6
