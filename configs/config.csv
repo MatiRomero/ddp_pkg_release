@@ -1,0 +1,13 @@
+day,d,shadow,jobs_csv,save_csv
+0,5,hd,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d5_hd_rbatch.csv
+0,5,pb,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d5_pb_rbatch.csv
+0,5,naive,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d5_naive_rbatch.csv
+0,15,hd,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d15_hd_rbatch.csv
+0,15,pb,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d15_pb_rbatch.csv
+0,15,naive,data/meituan_city_lunchtime_plat10301330_day0.csv,results/meituan_day0_d15_naive_rbatch.csv
+1,5,hd,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d5_hd_rbatch.csv
+1,5,pb,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d5_pb_rbatch.csv
+1,5,naive,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d5_naive_rbatch.csv
+1,15,hd,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d15_hd_rbatch.csv
+1,15,pb,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d15_pb_rbatch.csv
+1,15,naive,data/meituan_city_lunchtime_plat10301330_day1.csv,results/meituan_day1_d15_naive_rbatch.csv
