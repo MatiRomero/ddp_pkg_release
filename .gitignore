@@ -16,6 +16,8 @@ results*.csv
 
 # experiment outputs
 results/
+!src/ddp/results/
+!src/ddp/results/**
 figs/
 sweeps/
 data/
