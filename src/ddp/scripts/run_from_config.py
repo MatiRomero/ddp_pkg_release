@@ -39,6 +39,9 @@ def main():
     jobs_csv = row["jobs_csv"].strip()
     save_csv = row["save_csv"].strip()
     shadow   = row.get("shadow", "hd").strip()  # default if missing
+    ad_duals = str(row.get("ad_duals", "") or "").strip()
+    ad_resolution_cell = str(row.get("ad_resolution", "") or "").strip()
+    ad_resolutions_cell = str(row.get("ad_resolutions", "") or "").strip()
     combined_csv_row = str(row.get("combined_csv", "") or "").strip()
 
     combined_csv_arg = args.combined_csv or ""
@@ -56,6 +59,18 @@ def main():
         "--d", d,
         "--shadows", shadow,          # run one shadow per task
     ]
+
+    if ad_duals:
+        cmd.extend(["--ad_duals", ad_duals])
+
+    if ad_resolution_cell:
+        for value in ad_resolution_cell.split(","):
+            cleaned = value.strip()
+            if cleaned:
+                cmd.extend(["--ad-resolution", cleaned])
+
+    if ad_resolutions_cell:
+        cmd.extend(["--ad-resolutions", ad_resolutions_cell])
 
     print(f"[INFO] SGE_TASK_ID={sge_task_id} -> row {row_idx+1}/{len(rows)}")
     print("[INFO] Running:", " ".join(cmd))
