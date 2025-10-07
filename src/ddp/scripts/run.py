@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 import importlib
+import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence, Literal
+from typing import Any, Callable, Mapping, Sequence, Literal
 
 import numpy as np
 
@@ -26,6 +28,87 @@ _POLICY_DEFAULT_GAMMA: dict[str, float] = {
     "rbatch": 0.5,
     "rbatch+": 1.0,
 }
+
+
+_AD_RESOLUTION_PATTERN = re.compile(r"_res(?P<resolution>[^_]+)_full\Z", re.IGNORECASE)
+
+
+def _extract_resolution_from_path(path: Path) -> str | None:
+    """Return the resolution token extracted from ``path`` if present."""
+
+    match = _AD_RESOLUTION_PATTERN.search(path.stem)
+    if match:
+        return match.group("resolution")
+    return None
+
+
+def _resolution_sort_key(resolution: str) -> tuple[int, float | str]:
+    """Return a deterministic ordering key favouring lower numeric values."""
+
+    match = re.search(r"\d+(?:\.\d+)?", resolution)
+    if match:
+        try:
+            return (0, float(match.group()))
+        except ValueError:  # pragma: no cover - defensive, shouldn't happen
+            pass
+    return (1, resolution)
+
+
+def _candidate_ad_files(spec: str) -> list[Path]:
+    """Return possible AD lookup files for ``spec`` considering globs and prefixes."""
+
+    path = Path(spec).expanduser()
+    parent = path.parent if path.parent != Path("") else Path(".")
+    name = path.name
+
+    if any(char in name for char in "*?[]"):
+        matches = sorted(parent.glob(name))
+        return [match for match in matches if match.is_file()]
+
+    if path.is_dir():
+        return [match for match in sorted(path.glob("*_res*_full.csv")) if match.is_file()]
+
+    if path.exists():
+        return [path]
+
+    pattern = f"{name}*_res*_full.csv" if name else "*_res*_full.csv"
+    return [match for match in sorted(parent.glob(pattern)) if match.is_file()]
+
+
+def _resolve_ad_resolution_map(
+    spec: str,
+    resolutions: Sequence[str] | None,
+) -> dict[str, Path]:
+    """Map resolution identifiers to lookup files based on ``spec`` and filters."""
+
+    base_path = Path(spec).expanduser()
+    requested = [res.strip() for res in (resolutions or []) if res and res.strip()]
+    requested_set = set(requested)
+    candidates = _candidate_ad_files(spec)
+
+    if not requested_set and base_path.is_file():
+        parent = base_path.parent if base_path.parent != Path("") else Path(".")
+        for match in sorted(parent.glob("*_res*_full.csv")):
+            if match.is_file() and match not in candidates:
+                candidates.append(match)
+
+    mapping: dict[str, Path] = {}
+    for candidate in candidates:
+        resolution = _extract_resolution_from_path(candidate)
+        if resolution is None:
+            continue
+        mapping.setdefault(resolution, candidate)
+
+    if requested_set:
+        missing = sorted(res for res in requested_set if res not in mapping)
+        if missing:
+            missing_str = ", ".join(missing)
+            raise FileNotFoundError(
+                f"Unable to locate AD resolution(s): {missing_str} under {spec}"
+            )
+        mapping = {res: mapping[res] for res in requested if res in mapping}
+
+    return mapping
 
 
 class AverageDualError(RuntimeError):
@@ -366,6 +449,7 @@ def _write_csv(rows, path: str) -> None:
     fields = [
         "shadow",
         "dispatch",
+        "ad_resolution",
         "n",
         "d",
         "seed",
@@ -384,6 +468,17 @@ def _write_csv(rows, path: str) -> None:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+@dataclass
+class _DispatchCandidate:
+    """Container for the metrics produced by a dispatch policy."""
+
+    dispatch: str
+    row: dict[str, Any]
+    run_time: float
+    detail: dict[str, Any] | None
+    resolution: str | None
 
 
 def run_instance(
@@ -409,6 +504,10 @@ def run_instance(
     | np.ndarray
     | None = None,
     ad_mapper: Callable[[Job], str | None] | None = None,
+    ad_duals_by_resolution:
+    Mapping[str, Sequence[float] | np.ndarray]
+    | Sequence[tuple[str, Sequence[float] | np.ndarray]]
+    | None = None,
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
@@ -430,8 +529,58 @@ def run_instance(
     already contain the runtime shadows aligned with ``jobs``. Provide either a
     job-aligned array/sequence, an :class:`AverageDualTable` with ``by_job`` set,
     or a table keyed by type strings alongside ``ad_mapper`` to translate jobs to
-    type identifiers. Missing entries raise :class:`AverageDualError`.
+    type identifiers. Missing entries raise :class:`AverageDualError`. When
+    multiple precomputed job-aligned arrays are supplied via
+    ``ad_duals_by_resolution`` the ``"ad"`` shadow is evaluated for each
+    resolution and the dispatch policy results are compared, favouring higher
+    savings and then the lowest resolution (numeric when possible) on ties.
     """
+
+    def _format_shadow_label(shadow_name: str, resolution_label: str | None) -> str:
+        base = shadow_name.upper()
+        if resolution_label:
+            return f"{base}({resolution_label})"
+        return base
+
+    def _print_result(shadow_name: str, resolution_label: str | None, candidate: _DispatchCandidate) -> None:
+        if not print_table:
+            return
+        row = candidate.row
+        pooled_pct = float(row["pooled_pct"])
+        savings = float(row["savings"])
+        ratio_lp = float(row["ratio_lp"])
+        lp_gap = float(row["lp_gap"])
+        ratio_opt_val = row.get("ratio_opt")
+        opt_gap_val = row.get("opt_gap")
+        if with_opt and opt_total is not None and ratio_opt_val is not None and opt_gap_val is not None:
+            ratio_opt_str = f"{float(ratio_opt_val):5.2f}x"
+            opt_gap_str = f"{float(opt_gap_val):9.3f}"
+        else:
+            ratio_opt_str = "  n/a"
+            opt_gap_str = "     n/a"
+        shadow_label = _format_shadow_label(shadow_name, resolution_label)
+        print(
+            f"{shadow_label:<10} {candidate.dispatch:<12} {pooled_pct:7.1f}% {savings:9.3f}  "
+            f"{ratio_lp:5.2f}x {lp_gap:9.3f}  {ratio_opt_str} {opt_gap_str}  "
+            f"{row['pairs']:>6}  {row['solos']:>6}  {candidate.run_time:7.3f}"
+        )
+
+    def _select_candidate(
+        items: list[tuple[str | None, _DispatchCandidate]]
+    ) -> tuple[str | None, _DispatchCandidate]:
+        if not items:
+            raise ValueError("candidate list cannot be empty")
+
+        def sort_key(item: tuple[str | None, _DispatchCandidate]) -> tuple:
+            resolution, candidate = item
+            savings_val = float(candidate.row.get("savings", float("nan")))
+            if math.isnan(savings_val):
+                savings_val = float("-inf")
+            res_key = (1, "") if resolution is None else _resolution_sort_key(resolution)
+            return (-savings_val, res_key[0], res_key[1], resolution or "")
+
+        sorted_items = sorted(items, key=sort_key)
+        return sorted_items[0]
 
     jobs = list(jobs)
     n = len(jobs)
@@ -476,171 +625,189 @@ def run_instance(
             "SHADOW     DISPATCH     POOLED%   SAVINGS    R/LP   LP_GAP    R/OPT  OPT_GAP   #PAIRS  #SOLOS   TIME(s)"
         )
 
-    rows = []
-    details = {}
+    rows: list[dict[str, Any]] = []
+    details: dict[Any, dict[str, Any]] = {}
 
     for sh in shadows:
+        variant_entries: list[tuple[str | None, np.ndarray]] = []
         if sh == "naive":
-            sp_base = np.zeros(n, dtype=float)
+            variant_entries.append((None, np.zeros(n, dtype=float)))
         elif sh == "pb":
-            sp_base = potential_vec(lengths)
+            variant_entries.append((None, potential_vec(lengths)))
         elif sh == "hd":
-            sp_base = duals
+            variant_entries.append((None, duals))
         elif sh == "ad":
-            if ad_duals is None:
-                raise AverageDualError(
-                    "Average-dual shadows require the precomputed 'ad_duals' table."
-                )
-            sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
+            if ad_duals_by_resolution is not None:
+                if isinstance(ad_duals_by_resolution, Mapping):
+                    items = list(ad_duals_by_resolution.items())
+                else:
+                    items = list(ad_duals_by_resolution)
+                items.sort(key=lambda item: _resolution_sort_key(item[0]))
+                for resolution_label, payload in items:
+                    array = np.asarray(payload, dtype=float)
+                    if array.shape[0] != n:
+                        raise AverageDualError(
+                            "Average-dual array does not match the number of jobs"
+                        )
+                    variant_entries.append((resolution_label, array))
+            else:
+                if ad_duals is None:
+                    raise AverageDualError(
+                        "Average-dual shadows require the precomputed 'ad_duals' table."
+                    )
+                sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
+                variant_entries.append((None, sp_base))
         else:
             if print_table:
                 print(f"[skip] Unknown shadow: {sh}")
             continue
 
-        for disp in dispatches:
-            t_run = time.perf_counter()
-            if disp == "greedy":
-                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = tau
-                sp = np.array(sp_base, dtype=float, copy=True)
-                sp = sp * gamma_eff + tau_eff
-                score_fn = make_local_score(reward_fn, sp)
-                res = simulate(
-                    jobs,
-                    score_fn,
-                    reward_fn,
-                    "naive",
-                    time_window=d,
-                    policy="score",
-                    weight_fn=None,
-                    shadow=None,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            elif disp == "greedy+":
-                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = tau
-                sp = np.array(sp_base, dtype=float, copy=True)
-                sp = sp * gamma_eff + tau_eff
-                score_fn = make_local_score(reward_fn, sp)
-                res = simulate(
-                    jobs,
-                    score_fn,
-                    reward_fn,
-                    "threshold",
-                    time_window=d,
-                    policy="score",
-                    weight_fn=None,
-                    shadow=None,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            elif disp == "batch":
-                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = tau
-                sp = np.array(sp_base, dtype=float, copy=True)
-                sp = sp * gamma_eff + tau_eff
-                score_fn = make_local_score(reward_fn, sp)
-                w_fn = make_weight_fn(reward_fn, sp)
-                res = simulate(
-                    jobs,
-                    score_fn,
-                    reward_fn,
-                    "policy",
-                    time_window=d,
-                    policy="batch",
-                    weight_fn=w_fn,
-                    shadow=sp,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            elif disp == "batch+":
-                gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-                tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-                sp_plus = np.array(sp_base, dtype=float, copy=True)
-                sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                score_plus = make_local_score(reward_fn, sp_plus)
-                weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
-                res = simulate(
-                    jobs,
-                    score_plus,
-                    reward_fn,
-                    "policy",
-                    time_window=d,
-                    policy="batch",
-                    weight_fn=weight_plus,
-                    shadow=None,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            elif disp == "rbatch":
-                gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                tau_eff = tau
-                sp = np.array(sp_base, dtype=float, copy=True)
-                sp = sp * gamma_eff + tau_eff
-                score_fn = make_local_score(reward_fn, sp)
-                w_fn = make_weight_fn(reward_fn, sp)
-                res = simulate(
-                    jobs,
-                    score_fn,
-                    reward_fn,
-                    "policy",
-                    time_window=d,
-                    policy="rbatch",
-                    weight_fn=w_fn,
-                    shadow=sp,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            elif disp == "rbatch+":
-                gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-                tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-                sp_plus = np.array(sp_base, dtype=float, copy=True)
-                sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                score_plus = make_local_score(reward_fn, sp_plus)
-                weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
-                res = simulate(
-                    jobs,
-                    score_plus,
-                    reward_fn,
-                    "policy",
-                    time_window=d,
-                    policy="rbatch",
-                    weight_fn=weight_plus,
-                    shadow=None,
-                    seed=seed,
-                    tie_breaker=tie_breaker,
-                )
-            else:
-                if print_table:
-                    print(f"[skip] Unknown dispatch: {disp}")
-                continue
-            run_time = time.perf_counter() - t_run
+        if not variant_entries:
+            continue
 
-            r = res["total_savings"]
-            pooled_pct = res["pooled_pct"]
-            ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
-            gap_lp = _safe_gap(lp_total, r)
-            if with_opt and opt_total is not None:
-                ratio_opt = (r / opt_total) if opt_total > 0 else float("nan")
-                gap_opt = _safe_gap(opt_total, r)
-                ratio_opt_str = f"{ratio_opt:5.2f}x"
-                gap_opt_str = f"{gap_opt:9.3f}"
-            else:
-                ratio_opt_str = "  n/a"
-                gap_opt_str = "     n/a"
+        variant_results: dict[str | None, dict[str, _DispatchCandidate]] = {}
 
-            if print_table:
-                print(
-                    f"{sh.upper():<10} {disp:<12} {pooled_pct:7.1f}% {r:9.3f}  "
-                    f"{ratio_lp:5.2f}x {gap_lp:9.3f}  {ratio_opt_str} {gap_opt_str}  "
-                    f"{len(res['pairs']):>6}  {len(res['solos']):>6}  {run_time:7.3f}"
+        for resolution_label, sp_base in variant_entries:
+            dispatch_candidates: dict[str, _DispatchCandidate] = {}
+            for disp in dispatches:
+                t_run = time.perf_counter()
+                if disp == "greedy":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "naive",
+                        time_window=d,
+                        policy="score",
+                        weight_fn=None,
+                        shadow=None,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "greedy+":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "threshold",
+                        time_window=d,
+                        policy="score",
+                        weight_fn=None,
+                        shadow=None,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "batch":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    w_fn = make_weight_fn(reward_fn, sp)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="batch",
+                        weight_fn=w_fn,
+                        shadow=sp,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "batch+":
+                    gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+                    tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+                    sp_plus = np.array(sp_base, dtype=float, copy=True)
+                    sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+                    score_plus = make_local_score(reward_fn, sp_plus)
+                    weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    res = simulate(
+                        jobs,
+                        score_plus,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="batch",
+                        weight_fn=weight_plus,
+                        shadow=None,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "rbatch":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    w_fn = make_weight_fn(reward_fn, sp)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="rbatch",
+                        weight_fn=w_fn,
+                        shadow=sp,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "rbatch+":
+                    gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+                    tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+                    sp_plus = np.array(sp_base, dtype=float, copy=True)
+                    sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+                    score_plus = make_local_score(reward_fn, sp_plus)
+                    weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    res = simulate(
+                        jobs,
+                        score_plus,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="rbatch",
+                        weight_fn=weight_plus,
+                        shadow=None,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                else:
+                    if print_table:
+                        print(f"[skip] Unknown dispatch: {disp}")
+                    continue
+
+                run_time = time.perf_counter() - t_run
+
+                r = res["total_savings"]
+                pooled_pct = res["pooled_pct"]
+                ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
+                gap_lp = _safe_gap(lp_total, r)
+                ratio_opt_val: float | None = None
+                gap_opt_val: float | None = None
+                if with_opt and opt_total is not None:
+                    ratio_opt_val = (r / opt_total) if opt_total > 0 else float("nan")
+                    gap_opt_val = _safe_gap(opt_total, r)
+                ratio_opt_for_row = (
+                    ratio_opt_val if (with_opt and opt_total and opt_total > 0) else None
                 )
+                opt_gap_for_row = gap_opt_val if (with_opt and opt_total is not None) else None
 
-            rows.append(
-                {
+                row = {
                     "shadow": sh,
                     "dispatch": disp,
+                    "ad_resolution": resolution_label if sh == "ad" else None,
                     "n": n,
                     "d": d if np.isscalar(d) else None,
                     "seed": seed,
@@ -648,23 +815,68 @@ def run_instance(
                     "pooled_pct": pooled_pct,
                     "ratio_lp": ratio_lp,
                     "lp_gap": gap_lp,
-                    "ratio_opt": (r / opt_total) if (with_opt and opt_total and opt_total > 0) else None,
-                    "opt_gap": (_safe_gap(opt_total, r) if (with_opt and opt_total is not None) else None),
+                    "ratio_opt": ratio_opt_for_row,
+                    "opt_gap": opt_gap_for_row,
                     "pairs": len(res["pairs"]),
                     "solos": len(res["solos"]),
                     "time_s": run_time,
                     "method": ("score" if "greedy" in disp else disp),
                 }
-            )
+
+                detail: dict[str, Any] | None = None
+                if return_details or print_matches:
+                    pairs_idx = [(i, j) for (i, j, *_rest) in res["pairs"]]
+                    detail = {"pairs": pairs_idx, "solos": list(res["solos"])}
+
+                dispatch_candidates[disp] = _DispatchCandidate(
+                    dispatch=disp,
+                    row=row,
+                    run_time=run_time,
+                    detail=detail,
+                    resolution=resolution_label,
+                )
+
+            if dispatch_candidates:
+                variant_results[resolution_label] = dispatch_candidates
+
+        if not variant_results:
+            continue
+
+        if len(variant_results) > 1:
+            for resolution_label, dispatch_map in variant_results.items():
+                metrics: list[str] = []
+                for disp in dispatches:
+                    candidate = dispatch_map.get(disp)
+                    if candidate is None:
+                        continue
+                    metrics.append(f"{disp}={candidate.row['savings']:.3f}")
+                if metrics:
+                    label = resolution_label or "<unspecified>"
+                    print(f"[ad] {sh} resolution {label}: " + ", ".join(metrics))
+
+        for disp in dispatches:
+            candidate_list = [
+                (resolution_label, dispatch_map[disp])
+                for resolution_label, dispatch_map in variant_results.items()
+                if disp in dispatch_map
+            ]
+            if not candidate_list:
+                continue
+            best_resolution, best_candidate = _select_candidate(candidate_list)
+            if sh != "ad":
+                best_candidate.row["ad_resolution"] = None
+            rows.append(best_candidate.row)
+            _print_result(sh, best_resolution if sh == "ad" else None, best_candidate)
 
             if return_details or print_matches:
-                pairs_idx = [(i, j) for (i, j, _, _) in res["pairs"]]
-                info = {"pairs": pairs_idx, "solos": list(res["solos"])}
-                details[(sh, disp)] = info
-                if print_matches:
-                    print(
-                        f"    -> matches {sh}/{disp}: pairs={pairs_idx}  solos={info['solos']}"
-                    )
+                detail = best_candidate.detail
+                if detail is not None:
+                    details[(sh, disp)] = detail
+                    if print_matches:
+                        suffix = f" (res={best_resolution})" if best_resolution else ""
+                        print(
+                            f"    -> matches {sh}/{disp}{suffix}: pairs={detail['pairs']}  solos={detail['solos']}"
+                        )
 
     if with_opt and opt_total is not None:
         opt_pairs_list = list(opt_pairs) if opt_pairs is not None else []
@@ -1037,6 +1249,24 @@ def main() -> None:
         ),
     )
     p.add_argument(
+        "--ad-resolution",
+        dest="ad_resolution",
+        action="append",
+        default=None,
+        help=(
+            "Specific AD resolution to evaluate. Can be repeated; implies job-level CSVs "
+            "named *_res*_full.csv."
+        ),
+    )
+    p.add_argument(
+        "--ad-resolutions",
+        dest="ad_resolutions",
+        default=None,
+        help=(
+            "Comma-separated list of AD resolutions to evaluate. Blank or omitted triggers auto discovery."
+        ),
+    )
+    p.add_argument(
         "--ad-mapping",
         help=(
             "Module:function resolving to an average-dual mapper used with type-indexed tables."
@@ -1094,7 +1324,25 @@ def main() -> None:
     shadow_list = [s.strip().lower() for s in args.shadows.split(",") if s.strip()]
     dispatch_list = [d.strip() for d in args.dispatch.split(",") if d.strip()]
 
-    ad_table = load_average_duals(args.ad_duals) if args.ad_duals else None
+    ad_resolution_inputs: list[str] = []
+    seen_resolutions: set[str] = set()
+    if args.ad_resolution:
+        for value in args.ad_resolution:
+            if not value:
+                continue
+            cleaned = value.strip()
+            if cleaned and cleaned not in seen_resolutions:
+                ad_resolution_inputs.append(cleaned)
+                seen_resolutions.add(cleaned)
+    if args.ad_resolutions is not None:
+        for part in args.ad_resolutions.split(","):
+            cleaned = part.strip()
+            if cleaned and cleaned not in seen_resolutions:
+                ad_resolution_inputs.append(cleaned)
+                seen_resolutions.add(cleaned)
+
+    ad_table: AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray | None = None
+    ad_by_resolution: dict[str, np.ndarray] | None = None
     ad_mapper: Callable[[Job], str | None] | None = None
     if args.ad_mapping:
         try:
@@ -1102,15 +1350,39 @@ def main() -> None:
         except (ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
             raise SystemExit(f"failed to resolve --ad-mapping: {exc}") from exc
     if "ad" in shadow_list:
-        if ad_table is None:
+        if not args.ad_duals:
             raise SystemExit("--shadows contains 'ad' so --ad_duals is required")
-        if (
-            isinstance(ad_table, AverageDualTable)
-            and ad_table.by_job is None
-            and ad_table.by_type is not None
-            and ad_mapper is None
-        ):
-            raise SystemExit("type-indexed average-dual tables require --ad-mapping")
+        try:
+            resolution_map = _resolve_ad_resolution_map(args.ad_duals, ad_resolution_inputs)
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        if resolution_map:
+            ad_by_resolution = {}
+            for resolution, path in sorted(
+                resolution_map.items(), key=lambda item: _resolution_sort_key(item[0])
+            ):
+                try:
+                    table = load_average_duals(str(path))
+                except (OSError, ValueError) as exc:
+                    raise SystemExit(f"failed to load AD lookup {path}: {exc}") from exc
+                try:
+                    ad_values = _load_precomputed_ad_shadows(jobs, table, mapper=ad_mapper)
+                except AverageDualError as exc:
+                    raise SystemExit(str(exc)) from exc
+                ad_by_resolution[resolution] = ad_values
+        else:
+            try:
+                ad_table = load_average_duals(args.ad_duals)
+            except (OSError, ValueError) as exc:
+                raise SystemExit(f"failed to load --ad-duals: {exc}") from exc
+            if (
+                isinstance(ad_table, AverageDualTable)
+                and ad_table.by_job is None
+                and ad_table.by_type is not None
+                and ad_mapper is None
+            ):
+                raise SystemExit("type-indexed average-dual tables require --ad-mapping")
     elif ad_mapper is not None:
         raise SystemExit("--ad-mapping can only be used when --shadows contains 'ad'")
 
@@ -1133,6 +1405,7 @@ def main() -> None:
         tie_breaker=args.tie_breaker,
         ad_duals=ad_table,
         ad_mapper=ad_mapper,
+        ad_duals_by_resolution=ad_by_resolution,
     )
 
 
