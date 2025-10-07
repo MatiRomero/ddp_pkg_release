@@ -198,6 +198,33 @@ python -m ddp.scripts.meituan_shadow_sweep \
   --csv results/meituan_shadow_summary.csv
 ```
 
+### Refreshing Meituan greedy metrics
+
+Greedy policy CSVs produced alongside the main Meituan results can be refreshed
+in bulk with ``scripts/update_meituan_greedy_results.py``. The helper iterates
+``day = 0..7`` and deadlines ``d ∈ {10, 20, 30, 40, 50, 60}``, loads
+``results/meituan_day{day}_d{d}.csv`` and the corresponding
+``greedy_results/meituan_day{day}_d{d}_greedys.csv`` files, and then:
+
+1. Builds the OPT lookup via ``ddp.scripts.merge_policy_results_meituan._build_opt_lookup``.
+2. Backfills ``ratio_opt`` and ``opt_gap`` on the greedy rows with
+   ``ddp.scripts.merge_policy_results_meituan._apply_opt_metrics``.
+3. Drops any baseline rows where ``shadow`` is ``hd``/``pb``/``naive`` and
+   ``method`` is ``greedy`` or ``greedy+`` before appending the enriched greedy
+   rows.
+4. Writes the combined CSV back to ``results/`` after copying the original to
+   ``*.csv.bak``.
+
+Run it from the repository root (use ``--dry-run`` first to validate paths):
+
+```bash
+python scripts/update_meituan_greedy_results.py --dry-run
+python scripts/update_meituan_greedy_results.py
+```
+
+Override ``--results-dir``/``--greedy-dir``/``--days``/``--deadlines`` as needed
+to focus on a subset of files.
+
 The same arguments work with the repository wrapper
 (``python scripts/run_meituan_shadow_sweep.py ...``) when you prefer calling the
 package CLI from the project root. For larger sweeps, the parallel variant
