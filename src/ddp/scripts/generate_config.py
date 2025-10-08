@@ -18,7 +18,7 @@ from typing import Iterable, Mapping, Sequence
 # Core sweep dimensions -----------------------------------------------------
 
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
-_DEADLINES: Sequence[int] = [90,120,180]
+_DEADLINES: Sequence[int] = [600]
 _SHADOWS: Sequence[str] = ["pb"]
 
 
@@ -30,7 +30,7 @@ _SHADOWS: Sequence[str] = ["pb"]
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "dispatch": ["rbatch"],
-    "gamma": ["0","0.1","0.2"],
+    "gamma": ["0","0.1","0.2","0.3","0.4","0.5","0.6","0.7"],
     "tau": [""],
     "plus_gamma": [""],
     "plus_tau": [""],
