@@ -78,7 +78,7 @@ def _candidate_ad_files(spec: str) -> list[Path]:
 def _resolve_ad_resolution_map(
     spec: str,
     resolutions: Sequence[str] | None,
-) -> dict[str, Path]:
+) -> dict[str, list[Path]]:
     """Map resolution identifiers to lookup files based on ``spec`` and filters."""
 
     base_path = Path(spec).expanduser()
@@ -92,12 +92,12 @@ def _resolve_ad_resolution_map(
             if match.is_file() and match not in candidates:
                 candidates.append(match)
 
-    mapping: dict[str, Path] = {}
+    mapping: dict[str, list[Path]] = {}
     for candidate in candidates:
         resolution = _extract_resolution_from_path(candidate)
         if resolution is None:
             continue
-        mapping.setdefault(resolution, candidate)
+        mapping.setdefault(resolution, []).append(candidate)
 
     if requested_set:
         missing = sorted(res for res in requested_set if res not in mapping)
@@ -1359,18 +1359,33 @@ def main() -> None:
 
         if resolution_map:
             ad_by_resolution = {}
-            for resolution, path in sorted(
+            for resolution, paths in sorted(
                 resolution_map.items(), key=lambda item: _resolution_sort_key(item[0])
             ):
-                try:
-                    table = load_average_duals(str(path))
-                except (OSError, ValueError) as exc:
-                    raise SystemExit(f"failed to load AD lookup {path}: {exc}") from exc
-                try:
-                    ad_values = _load_precomputed_ad_shadows(jobs, table, mapper=ad_mapper)
-                except AverageDualError as exc:
-                    raise SystemExit(str(exc)) from exc
-                ad_by_resolution[resolution] = ad_values
+                success = False
+                errors: list[str] = []
+                for path in paths:
+                    try:
+                        table = load_average_duals(str(path))
+                    except (OSError, ValueError) as exc:
+                        errors.append(f"{path}: failed to load ({exc})")
+                        continue
+                    try:
+                        ad_values = _load_precomputed_ad_shadows(
+                            jobs, table, mapper=ad_mapper
+                        )
+                    except AverageDualError as exc:
+                        errors.append(f"{path}: {exc}")
+                        continue
+                    ad_by_resolution[resolution] = ad_values
+                    success = True
+                    break
+                if not success:
+                    detail = "; ".join(errors) if errors else "no candidates found"
+                    raise SystemExit(
+                        "failed to load AD lookup for resolution "
+                        f"{resolution}: {detail}"
+                    )
         else:
             try:
                 ad_table = load_average_duals(args.ad_duals)
