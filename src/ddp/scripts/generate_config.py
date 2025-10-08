@@ -18,8 +18,8 @@ from typing import Iterable, Mapping, Sequence
 # Core sweep dimensions -----------------------------------------------------
 
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
-_DEADLINES: Sequence[int] = [600]
-_SHADOWS: Sequence[str] = ["pb"]
+_DEADLINES: Sequence[int] = [10,20,30,40,50,60,90,120,150,180,210,240,270,300]
+_SHADOWS: Sequence[str] = ["ad"]
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -29,8 +29,8 @@ _SHADOWS: Sequence[str] = ["pb"]
 # will create an empty column so that the default provided by the run module
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
-    "dispatch": ["rbatch"],
-    "gamma": ["0","0.1","0.2","0.3","0.4","0.5","0.6","0.7"],
+    "dispatch": ["greedy"],
+    "gamma": [""],
     "tau": [""],
     "plus_gamma": [""],
     "plus_tau": [""],
@@ -42,7 +42,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "print_matches": [""],
     "return_details": [""],
     "tie_breaker": [""],
-    "ad_duals": ["data/average_duals_area6"],
+    "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
     "ad_resolution": [""],
     "ad_resolutions": [""],
     "ad_mapping": [""],
@@ -107,7 +107,7 @@ def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
 
     for day, deadline, shadow in itertools.product(_DAYS, _DEADLINES, _SHADOWS):
         # jobs_csv = f"data/meituan_city_lunchtime_plat10301330_day{day}.csv"
-        jobs_csv = f"data/meituan_area6_lunchtime_plat10301330_day{day}.csv"
+        jobs_csv = f"data/meituan_city_lunchtime_plat10301330_day{day}.csv"
         base_name_parts = [f"day{day}", f"d{deadline}", shadow]
 
         option_values_product = itertools.product(
