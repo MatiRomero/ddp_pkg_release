@@ -42,7 +42,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "print_matches": [""],
     "return_details": [""],
     "tie_breaker": [""],
-    "ad_duals": [""],
+    "ad_duals": ["data/average_duals_city"],
     "ad_resolution": [""],
     "ad_resolutions": [""],
     "ad_mapping": [""],
