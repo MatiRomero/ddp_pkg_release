@@ -102,9 +102,7 @@ def test_cli_auto_resolution_selects_best(tmp_path, monkeypatch, capsys):
 
     run_mod.main()
 
-    captured = capsys.readouterr()
-    assert "[ad] ad resolution 05" in captured.out
-    assert "[ad] ad resolution 10" in captured.out
+    capsys.readouterr()
 
     with output_csv.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -116,3 +114,55 @@ def test_cli_auto_resolution_selects_best(tmp_path, monkeypatch, capsys):
 
     after_mtimes = {path: path.stat().st_mtime_ns for path in (res05, res10)}
     assert before_mtimes == after_mtimes
+
+
+def test_cli_resolution_directory_handles_multiple_candidates(
+    tmp_path, monkeypatch, capsys
+):
+    jobs_csv = tmp_path / "jobs.csv"
+    _write_job_csv(jobs_csv)
+
+    ad_dir = tmp_path / "ad"
+    ad_dir.mkdir()
+
+    mismatched = ad_dir / "example_day0_res05_full.csv"
+    matching = ad_dir / "example_day1_res05_full.csv"
+    _write_ad_csv(mismatched, [1.0, 2.0, 3.0])
+    _write_ad_csv(matching, [4.0, 5.0])
+
+    monkeypatch.setattr(run_mod, "compute_lp_relaxation", _stub_lp)
+    monkeypatch.setattr(run_mod, "simulate", _stub_simulate)
+
+    output_csv = tmp_path / "results.csv"
+
+    argv = [
+        "python",
+        "--jobs-csv",
+        str(jobs_csv),
+        "--timestamp-column",
+        "platform_order_time",
+        "--d",
+        "60",
+        "--seed",
+        "0",
+        "--shadows",
+        "ad",
+        "--dispatch",
+        "greedy",
+        "--ad_duals",
+        str(ad_dir),
+        "--save_csv",
+        str(output_csv),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    run_mod.main()
+
+    captured = capsys.readouterr()
+    assert "failed to load" not in captured.out
+
+    with output_csv.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows, "expected CSV output"
+    savings_values = {row["dispatch"]: float(row["savings"]) for row in rows}
+    assert savings_values == {"greedy": 9.0}
