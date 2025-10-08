@@ -113,7 +113,13 @@ def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
             *(values for _, values in optional_items)
         )
         for option_values in option_values_product:
-            optional_payload = dict(zip(optional_columns, option_values, strict=True))
+            if len(optional_columns) != len(option_values):
+                raise RuntimeError(
+                    "Mismatch between optional column names and values while building"
+                    " configuration rows."
+                )
+
+            optional_payload = dict(zip(optional_columns, option_values))
 
             name_parts = list(base_name_parts)
             for column, value in optional_payload.items():
