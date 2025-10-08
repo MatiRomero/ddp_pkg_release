@@ -17,9 +17,9 @@ from typing import Iterable, Mapping, Sequence
 
 # Core sweep dimensions -----------------------------------------------------
 
-_DAYS: Sequence[int] = [0, 1, 2, 3, 4, 5, 6, 7]
-_DEADLINES: Sequence[int] = [210, 240, 270, 300]
-_SHADOWS: Sequence[str] = ["hd", "pb", "naive"]
+_DAYS: Sequence[int] = [0,1]
+_DEADLINES: Sequence[int] = [10]
+_SHADOWS: Sequence[str] = ["hd", "pb", "ad", "naive"]
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -29,7 +29,7 @@ _SHADOWS: Sequence[str] = ["hd", "pb", "naive"]
 # will create an empty column so that the default provided by the run module
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
-    "dispatch": [""],
+    "dispatch": ["greedy"],
     "gamma": [""],
     "tau": [""],
     "plus_gamma": [""],

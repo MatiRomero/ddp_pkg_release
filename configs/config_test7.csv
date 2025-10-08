@@ -1,0 +1,4 @@
+day,d,shadow,jobs_csv,save_csv,dispatch,gamma,tau,plus_gamma,plus_tau,seed,timestamp_column,export_npz,with_opt,opt_method,print_matches,return_details,tie_breaker,ad_duals,ad_resolution,ad_resolutions,ad_mapping
+0,7,hd,data/meituan_city_lunchtime_plat10301330_day0.csv,results/test7/day0_d7_hd_dispatchrbatch.csv,rbatch,,,,,,,,,,,,,,,,
+0,7,pb,data/meituan_city_lunchtime_plat10301330_day0.csv,results/test7/day0_d7_pb_dispatchrbatch.csv,rbatch,,,,,,,,,,,,,,,,
+0,7,naive,data/meituan_city_lunchtime_plat10301330_day0.csv,results/test7/day0_d7_naive_dispatchrbatch.csv,rbatch,,,,,,,,,,,,,,,,
