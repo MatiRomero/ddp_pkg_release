@@ -9,7 +9,18 @@ from typing import Iterable
 import pandas as pd
 
 # Columns that identify a unique experimental configuration.
-GROUP_FIELDS: list[str] = ["param", "param_value", "shadow", "dispatch", "n", "d"]
+GROUP_FIELDS: list[str] = [
+    "param",
+    "param_value",
+    "shadow",
+    "dispatch",
+    "gamma",
+    "tau",
+    "gamma_plus",
+    "tau_plus",
+    "n",
+    "d",
+]
 
 # Numeric metrics recorded for each trial that we aggregate with mean/std.
 NUMERIC_FIELDS: list[str] = [
@@ -57,7 +68,7 @@ def aggregate(path: str) -> pd.DataFrame:
     -------
     pandas.DataFrame
         Aggregated data where each row corresponds to a unique combination of
-        ``(param, param_value, shadow, dispatch, n, d)`` with mean and std
+        ``(param, param_value, shadow, dispatch, gamma, tau, gamma_plus, tau_plus, n, d)`` with mean and std
         columns (``mean_*`` and ``std_*``) for each metric in
         :data:`NUMERIC_FIELDS` that is present in the input CSV.
     """
@@ -81,7 +92,15 @@ def aggregate(path: str) -> pd.DataFrame:
         df["param"] = _clean_category(df["param"], lower=True)
 
     # Convert numeric-like columns to floats (non-numeric entries become NaN).
-    numeric_candidates: Iterable[str] = list(NUMERIC_FIELDS) + ["n", "d", "param_value"]
+    numeric_candidates: Iterable[str] = list(NUMERIC_FIELDS) + [
+        "n",
+        "d",
+        "param_value",
+        "gamma",
+        "tau",
+        "gamma_plus",
+        "tau_plus",
+    ]
     for col in numeric_candidates:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -133,6 +152,10 @@ def _print_summary_table(df: pd.DataFrame, *, limit: int = 10) -> None:
             "param_value",
             "shadow",
             "dispatch",
+            "gamma",
+            "tau",
+            "gamma_plus",
+            "tau_plus",
             "n",
             "d",
             "trial_count",
