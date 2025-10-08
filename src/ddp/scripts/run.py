@@ -459,6 +459,10 @@ def _write_csv(rows, path: str) -> None:
         "lp_gap",
         "ratio_opt",
         "opt_gap",
+        "gamma",
+        "tau",
+        "gamma_plus",
+        "tau_plus",
         "pairs",
         "solos",
         "time_s",
@@ -671,12 +675,18 @@ def run_instance(
             dispatch_candidates: dict[str, _DispatchCandidate] = {}
             for disp in dispatches:
                 t_run = time.perf_counter()
+                gamma_value: float | None = None
+                tau_value: float | None = None
+                gamma_plus_value: float | None = None
+                tau_plus_value: float | None = None
                 if disp == "greedy":
                     gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
                     score_fn = make_local_score(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
@@ -695,6 +705,8 @@ def run_instance(
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
                     score_fn = make_local_score(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
@@ -714,6 +726,8 @@ def run_instance(
                     sp = sp * gamma_eff + tau_eff
                     score_fn = make_local_score(reward_fn, sp)
                     w_fn = make_weight_fn(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
@@ -733,6 +747,8 @@ def run_instance(
                     sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
                     score_plus = make_local_score(reward_fn, sp_plus)
                     weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    gamma_plus_value = float(gamma_plus_eff)
+                    tau_plus_value = float(tau_plus_eff)
                     res = simulate(
                         jobs,
                         score_plus,
@@ -752,6 +768,8 @@ def run_instance(
                     sp = sp * gamma_eff + tau_eff
                     score_fn = make_local_score(reward_fn, sp)
                     w_fn = make_weight_fn(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
@@ -771,6 +789,8 @@ def run_instance(
                     sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
                     score_plus = make_local_score(reward_fn, sp_plus)
                     weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    gamma_plus_value = float(gamma_plus_eff)
+                    tau_plus_value = float(tau_plus_eff)
                     res = simulate(
                         jobs,
                         score_plus,
@@ -821,6 +841,10 @@ def run_instance(
                     "solos": len(res["solos"]),
                     "time_s": run_time,
                     "method": ("score" if "greedy" in disp else disp),
+                    "gamma": gamma_value,
+                    "tau": tau_value,
+                    "gamma_plus": gamma_plus_value,
+                    "tau_plus": tau_plus_value,
                 }
 
                 detail: dict[str, Any] | None = None
@@ -912,6 +936,10 @@ def run_instance(
             "solos": len(opt_solo_indices),
             "time_s": opt_time,
             "method": opt_m,
+            "gamma": None,
+            "tau": None,
+            "gamma_plus": None,
+            "tau_plus": None,
         }
         rows.append(opt_row)
 
@@ -1012,6 +1040,10 @@ def run_once(
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
         score_fn = make_local_score(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value: float | None = None
+        tau_plus_value: float | None = None
         res = simulate(
             jobs,
             score_fn,
@@ -1030,6 +1062,10 @@ def run_once(
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
         score_fn = make_local_score(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
         res = simulate(
             jobs,
             score_fn,
@@ -1049,6 +1085,10 @@ def run_once(
         sp = sp * gamma_eff + tau_eff
         score_fn = make_local_score(reward_fn, sp)
         w_fn = make_weight_fn(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
         res = simulate(
             jobs,
             score_fn,
@@ -1068,6 +1108,10 @@ def run_once(
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
         score_fn_plus = make_local_score(reward_fn, sp_plus)
         w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+        gamma_value = None
+        tau_value = None
+        gamma_plus_value = float(gamma_plus_eff)
+        tau_plus_value = float(tau_plus_eff)
         res = simulate(
             jobs,
             score_fn_plus,
@@ -1087,6 +1131,10 @@ def run_once(
         sp = sp * gamma_eff + tau_eff
         score_fn = make_local_score(reward_fn, sp)
         w_fn = make_weight_fn(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
         res = simulate(
             jobs,
             score_fn,
@@ -1106,6 +1154,10 @@ def run_once(
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
         score_fn_plus = make_local_score(reward_fn, sp_plus)
         w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+        gamma_value = None
+        tau_value = None
+        gamma_plus_value = float(gamma_plus_eff)
+        tau_plus_value = float(tau_plus_eff)
         res = simulate(
             jobs,
             score_fn_plus,
@@ -1145,6 +1197,10 @@ def run_once(
         "solos": len(res["solos"]),
         "time_s": run_time,
         "method": ("score" if "greedy" in dispatch else dispatch),
+        "gamma": gamma_value,
+        "tau": tau_value,
+        "gamma_plus": gamma_plus_value,
+        "tau_plus": tau_plus_value,
     }
 
 
