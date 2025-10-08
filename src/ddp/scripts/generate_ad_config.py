@@ -18,7 +18,7 @@ DEFAULT_DAYS: Sequence[str] = (
     "6",
     "7",
 )
-DEFAULT_DEADLINES: Sequence[str] = ("10","20","30","40","50","60","90","120","150","180","210","240","270","300")
+DEFAULT_DEADLINES: Sequence[str] = ("90","120","150","180","210","240","270","300")
 DEFAULT_RESOLUTIONS: Sequence[str] = ("7", "8", "9", "10")
 DEFAULT_DATA_DIR = "data"
 DEFAULT_JOBS_PATTERN = "meituan_city_lunchtime_plat10301330_day{day}.csv"

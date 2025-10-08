@@ -9,6 +9,26 @@ import subprocess
 import sys
 from typing import Iterable
 
+# --- repo-path resolver (module-level) ---
+_cfg_path = None          # e.g., /.../ddp_pkg_release/configs/config_x.csv
+_repo_root = None         # e.g., /.../ddp_pkg_release
+
+def resolve_repo_path(p):
+    """
+    Resolve paths relative to the repo root (parent of 'configs/').
+    - Absolute paths are returned unchanged.
+    - Relative paths like 'data/...' or 'results/...' become '/.../ddp_pkg_release/<rel>'.
+    - Falsy inputs (None, '') return ''.
+    NOTE: _repo_root must be initialized after parsing --config (see snippet #2).
+    """
+    if not p:
+        return ""
+    q = pathlib.Path(os.path.expanduser(str(p).strip()))
+    if q.is_absolute():
+        return str(q)
+    if _repo_root is None:
+        raise RuntimeError("resolve_repo_path: repo root not initialized; set _repo_root after parsing --config")
+    return str((_repo_root / q).resolve())
 
 _COLUMN_TO_FLAG: dict[str, str] = {
     "jobs_csv": "--jobs-csv",
@@ -40,6 +60,7 @@ _BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details"}
 _REPEATABLE_COLUMNS = {"ad_resolution"}
 
 
+
 def _normalise(value: str | None) -> str:
     return value.strip() if value else ""
 
@@ -59,6 +80,17 @@ def main() -> None:
     # Everything else (fixed flags) is forwarded to ddp.scripts.run:
     args, forward = parser.parse_known_args()
 
+    # --- initialize repo root from --config ---
+    cfg_path = pathlib.Path(os.path.expanduser(args.config)).resolve()
+    repo_root = cfg_path.parent.parent  # parent of 'configs/' => repo root
+
+    # publish to the resolver
+    globals()["_cfg_path"]  = cfg_path
+    globals()["_repo_root"] = repo_root
+
+    # (optional) normalize args.config itself to absolute path
+    args.config = str(cfg_path)
+
     sge_task_id = int(os.environ.get("SGE_TASK_ID", "1"))
     row_idx = sge_task_id - 1
 
@@ -74,8 +106,8 @@ def main() -> None:
 
     row = rows[row_idx]
 
-    jobs_csv = _normalise(row.get("jobs_csv"))
-    jobs_npz = _normalise(row.get("jobs"))
+    jobs_csv = resolve_repo_path(_normalise(row.get("jobs_csv")))
+    jobs_npz = resolve_repo_path(_normalise(row.get("jobs")))
     if jobs_csv and jobs_npz:
         raise SystemExit("Provide only one of 'jobs_csv' or 'jobs' in the config row")
     if jobs_csv:
@@ -87,7 +119,7 @@ def main() -> None:
     else:
         raise SystemExit("Config row missing required 'jobs_csv' or 'jobs' entry")
 
-    save_csv = _normalise(row.get("save_csv"))
+    save_csv = resolve_repo_path(_normalise(row.get("save_csv")))
     if not save_csv:
         raise SystemExit("Config row missing required 'save_csv' entry")
 
