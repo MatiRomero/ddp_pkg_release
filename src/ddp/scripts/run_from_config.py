@@ -1,25 +1,10 @@
 # src/ddp/scripts/run_from_config.py
 import os, sys, csv, subprocess, argparse, pathlib
 
-from ddp.results.append_csv import append_csv_locked
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.csv", help="Path to config CSV")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved command and exit")
-    parser.add_argument(
-        "--combined-csv",
-        default=None,
-        help=(
-            "Optional path to a shared CSV that will receive the per-task results "
-            "after a successful run."
-        ),
-    )
-    parser.add_argument(
-        "--keep-individual",
-        action="store_true",
-        help="Keep each task's CSV output after appending to the combined file.",
-    )
     # Everything else (fixed flags) is forwarded to ddp.scripts.run:
     args, forward = parser.parse_known_args()
 
@@ -39,15 +24,6 @@ def main():
     jobs_csv = row["jobs_csv"].strip()
     save_csv = row["save_csv"].strip()
     shadow   = row.get("shadow", "hd").strip()  # default if missing
-    ad_duals = str(row.get("ad_duals", "") or "").strip()
-    ad_resolution_cell = str(row.get("ad_resolution", "") or "").strip()
-    ad_resolutions_cell = str(row.get("ad_resolutions", "") or "").strip()
-    combined_csv_row = str(row.get("combined_csv", "") or "").strip()
-
-    combined_csv_arg = args.combined_csv or ""
-    combined_csv = combined_csv_arg.strip()
-    if not combined_csv:
-        combined_csv = combined_csv_row
 
     pathlib.Path(save_csv).parent.mkdir(parents=True, exist_ok=True)
 
@@ -60,40 +36,12 @@ def main():
         "--shadows", shadow,          # run one shadow per task
     ]
 
-    if ad_duals:
-        cmd.extend(["--ad_duals", ad_duals])
-
-    if ad_resolution_cell:
-        for value in ad_resolution_cell.split(","):
-            cleaned = value.strip()
-            if cleaned:
-                cmd.extend(["--ad-resolution", cleaned])
-
-    if ad_resolutions_cell:
-        cmd.extend(["--ad-resolutions", ad_resolutions_cell])
-
     print(f"[INFO] SGE_TASK_ID={sge_task_id} -> row {row_idx+1}/{len(rows)}")
     print("[INFO] Running:", " ".join(cmd))
     if args.dry_run:
         return
 
     res = subprocess.run(cmd)
-
-    if combined_csv and res.returncode == 0:
-        try:
-            append_csv_locked(save_csv, combined_csv)
-        except Exception:
-            print(
-                f"[ERROR] Failed to append {save_csv} to combined CSV {combined_csv}",
-                file=sys.stderr,
-            )
-            raise
-        if not args.keep_individual:
-            try:
-                os.remove(save_csv)
-            except FileNotFoundError:
-                pass
-
     raise SystemExit(res.returncode)
 
 if __name__ == "__main__":
