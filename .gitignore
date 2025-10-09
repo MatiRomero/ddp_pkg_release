@@ -23,3 +23,5 @@ sweeps/
 data/
 reports/
 src/ddp/results
+configs/
+notebooks/
