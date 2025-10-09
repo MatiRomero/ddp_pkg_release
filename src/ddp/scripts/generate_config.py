@@ -19,7 +19,7 @@ from typing import Iterable, Mapping, Sequence
 
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
 _DEADLINES: Sequence[int] = [90]
-_SHADOWS: Sequence[str] = ["naive"]
+_SHADOWS: Sequence[str] = ["hd"]
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -30,8 +30,8 @@ _SHADOWS: Sequence[str] = ["naive"]
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "dispatch": ["rbatch"],
-    "gamma": [""],
-    "tau": ["0","0.01","0.02"],
+    "gamma": ["0.8"],
+    "tau": [""],
     "plus_gamma": [""],
     "plus_tau": [""],
     "seed": [""],
@@ -42,9 +42,9 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "print_matches": [""],
     "return_details": [""],
     "tie_breaker": [""],
-    # "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
-    "ad_duals": [""],
-    "ad_resolution": [""],
+    "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
+    # "ad_duals": [""],
+    "ad_resolution": ["8"],
     "ad_resolutions": [""],
     "ad_mapping": [""],
 }
@@ -107,8 +107,8 @@ def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
     optional_columns = [column for column, _ in optional_items]
 
     for day, deadline, shadow in itertools.product(_DAYS, _DEADLINES, _SHADOWS):
-        # jobs_csv = f"data/meituan_city_lunchtime_plat10301330_day{day}.csv"
-        jobs_csv = f"data/meituan_area6_lunchtime_plat10301330_day{day}.csv"
+        jobs_csv = f"data/meituan_city_lunchtime_plat10301330_day{day}.csv"
+        # jobs_csv = f"data/meituan_area6_lunchtime_plat10301330_day{day}.csv"
         base_name_parts = [f"day{day}", f"d{deadline}", shadow]
 
         option_values_product = itertools.product(

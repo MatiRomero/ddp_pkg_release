@@ -1305,7 +1305,7 @@ def main() -> None:
         ),
     )
     p.add_argument(
-        "--ad-resolution",
+        "--ad_resolution",
         dest="ad_resolution",
         action="append",
         default=None,
@@ -1315,7 +1315,7 @@ def main() -> None:
         ),
     )
     p.add_argument(
-        "--ad-resolutions",
+        "--ad_resolutions",
         dest="ad_resolutions",
         default=None,
         help=(
