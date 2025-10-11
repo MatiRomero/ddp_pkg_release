@@ -27,6 +27,7 @@ import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -127,6 +128,72 @@ def _policy_key(row: pd.Series) -> str:
     shadow = row.get("shadow", pd.NA)
     dispatch = row.get("dispatch", pd.NA)
     return f"{shadow}+{dispatch}"
+
+
+_METRIC_LABELS: dict[str, str] = {
+    "savings": "total reward",
+    "pooled_pct": "match rate",
+    "ratio_lp": "LP Ratio",
+    "ratio_opt": "Ratio",
+    "time-s": "Running Time (s)",
+}
+
+
+_PARAM_LABELS: dict[str, str] = {
+    "d": "Time window (s)",
+}
+
+
+def _format_metric_label(metric: str) -> str:
+    base = metric
+    if base.startswith("mean_"):
+        base = base[len("mean_") :]
+    label = _METRIC_LABELS.get(base)
+    if label:
+        return label
+    return base.replace("_", " ")
+
+
+def _format_param_label(param: str | None) -> str:
+    if not param:
+        return "param_value"
+    return _PARAM_LABELS.get(param, param)
+
+
+def _split_policy_key(policy: str) -> tuple[str, str]:
+    if "+" in policy:
+        shadow, dispatch = policy.split("+", 1)
+        return shadow, dispatch
+    return policy, ""
+
+
+def _build_style_mappings(policies: Iterable[str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    shadows = sorted({shadow for shadow, _ in (_split_policy_key(p) for p in policies)})
+    dispatches = sorted({dispatch for _, dispatch in (_split_policy_key(p) for p in policies)})
+
+    color_cycle = plt.rcParams.get("axes.prop_cycle")
+    default_colors = []
+    if color_cycle:
+        default_colors = color_cycle.by_key().get("color", [])
+
+    color_map: dict[str, str] = {}
+    if shadows:
+        if default_colors and len(default_colors) >= len(shadows):
+            palette = [default_colors[i] for i in range(len(shadows))]
+        else:
+            cmap = plt.get_cmap("tab20", max(len(shadows), 1))
+            palette = [cmap(i) for i in range(len(shadows))]
+        color_map = {shadow: palette[i % len(palette)] for i, shadow in enumerate(shadows)}
+
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    linestyles = ["-", "--", "-.", ":"]
+    style_cycle = list(product(markers, linestyles)) or [("o", "-")]
+    style_map: dict[str, tuple[str, str]] = {}
+    for idx, dispatch in enumerate(dispatches):
+        marker, linestyle = style_cycle[idx % len(style_cycle)]
+        style_map[dispatch] = (marker, linestyle)
+
+    return color_map, style_map
 
 
 def _parse_policy_filter(text: str) -> set[str] | None:
@@ -362,8 +429,12 @@ def _plot_metric_sweep(
 
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
 
+    policies = sorted(by_policy.keys())
+    color_map, style_map = _build_style_mappings(policies)
+
     drew_any = False
-    for policy, rows in sorted(by_policy.items()):
+    for policy in policies:
+        rows = by_policy[policy]
         policy_df = pd.DataFrame(rows)
         xs = pd.to_numeric(policy_df.get("param_value"), errors="coerce")
         ys = pd.to_numeric(policy_df.get(metric), errors="coerce")
@@ -409,7 +480,20 @@ def _plot_metric_sweep(
         else:
             yerr = None
 
-        ax.errorbar(xs, ys, yerr=yerr, fmt="-o", capsize=3, label=policy)
+        shadow, dispatch = _split_policy_key(policy)
+        color = color_map.get(shadow)
+        marker, linestyle = style_map.get(dispatch, ("o", "-"))
+
+        ax.errorbar(
+            xs,
+            ys,
+            yerr=yerr,
+            color=color,
+            marker=marker,
+            linestyle=linestyle,
+            capsize=3,
+            label=policy,
+        )
         drew_any = True
 
     if not drew_any:
@@ -417,34 +501,32 @@ def _plot_metric_sweep(
 
     param_name = df.get("param", pd.Series(dtype=object)).dropna().unique()
     if len(param_name) == 1:
-        x_label = str(param_name[0])
+        x_label = _format_param_label(str(param_name[0]))
     else:
         x_label = "param_value"
     ax.set_xlabel(x_label)
 
-    y_label = metric.replace("mean_", "").replace("_", " ")
+    y_label = _format_metric_label(metric)
     ax.set_ylabel(y_label)
-
-    if title and title.strip() and metric.lower() != "all":
-        ax.set_title(title.strip())
-    else:
-        ax.set_title(f"{y_label} vs {x_label}")
 
     ax.grid(True, which="both", alpha=0.3)
 
     if drew_any and show_legend:
+        ncol = max(1, min(4, len(policies)))
         ax.legend(
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.22),
             borderaxespad=0,
             fontsize=9,
             frameon=False,
+            ncol=ncol,
         )
-    fig.tight_layout(rect=(0, 0, 0.8, 1))
+
+    fig.tight_layout(pad=0.8)
 
     out_path = _compute_out_path(csv_hint, metric, out_arg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=160)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
