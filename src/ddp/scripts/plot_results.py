@@ -27,6 +27,7 @@ import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -127,6 +128,163 @@ def _policy_key(row: pd.Series) -> str:
     shadow = row.get("shadow", pd.NA)
     dispatch = row.get("dispatch", pd.NA)
     return f"{shadow}+{dispatch}"
+
+
+_METRIC_LABELS: dict[str, str] = {
+    "savings": "total reward",
+    "pooled_pct": "match rate",
+    "ratio_lp": "LP Ratio",
+    "ratio_opt": "Ratio",
+    "time-s": "Running Time (s)",
+}
+
+
+_PARAM_LABELS: dict[str, str] = {
+    "d": "Time window (s)",
+}
+
+
+_SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
+    # Keep policy colours stable across plots for recognisable comparisons.
+    "opt": ("#111111",),
+    "naive": ("#f59e0b", "#d97706"),
+    "pb": ("#2563eb", "#1d4ed8", "#3b82f6", "#60a5fa"),
+    "hd": ("#16a34a", "#15803d", "#22c55e"),
+    "ad": ("#d946ef", "#a21caf", "#c084fc"),
+}
+
+
+_POLICY_SHADOW_LABELS: dict[str, str] = {
+    "opt": "OPT",
+    "naive": "NAIVE",
+    "pb": "PB",
+    "hd": "HD",
+    "ad": "AD",
+}
+
+
+_POLICY_DISPATCH_LABELS: dict[str, str] = {
+    "batch": "BAT",
+    "rbatch": "RBAT",
+    "greedy": "GRE",
+    "opt": "OPT",
+}
+
+
+def _format_metric_label(metric: str) -> str:
+    base = metric
+    if base.startswith("mean_"):
+        base = base[len("mean_") :]
+    label = _METRIC_LABELS.get(base)
+    if label:
+        return label
+    return base.replace("_", " ")
+
+
+def _format_param_label(param: str | None) -> str:
+    if not param:
+        return "param_value"
+    return _PARAM_LABELS.get(param, param)
+
+
+def _split_policy_key(policy: str) -> tuple[str, str]:
+    if "+" in policy:
+        shadow, dispatch = policy.split("+", 1)
+        return shadow, dispatch
+    return policy, ""
+
+
+def _shadow_family(shadow: str) -> str | None:
+    lowered = shadow.lower()
+    for family in _SHADOW_COLOR_FAMILIES:
+        if lowered == family:
+            return family
+        if lowered.startswith(f"{family}+"):
+            return family
+        if lowered.startswith(f"{family}-"):
+            return family
+        if lowered.startswith(f"{family}_"):
+            return family
+    return None
+
+
+def _assign_shadow_colors(shadows: Iterable[str]) -> dict[str, str]:
+    unique = sorted({s for s in shadows if isinstance(s, str) and s})
+    color_map: dict[str, str] = {}
+
+    for family, palette in _SHADOW_COLOR_FAMILIES.items():
+        members = [s for s in unique if _shadow_family(s) == family]
+        if not members:
+            continue
+        for idx, member in enumerate(members):
+            color_map[member] = palette[idx % len(palette)]
+
+    remaining = [s for s in unique if s not in color_map]
+    if remaining:
+        color_cycle = plt.rcParams.get("axes.prop_cycle")
+        default_colors = color_cycle.by_key().get("color", []) if color_cycle else []
+        if not default_colors:
+            cmap = plt.get_cmap("tab20", max(len(remaining), 1))
+            default_colors = [cmap(i) for i in range(len(remaining))]
+        for idx, shadow in enumerate(remaining):
+            color_map[shadow] = default_colors[idx % len(default_colors)]
+
+    return color_map
+
+
+def _format_policy_label(policy: str) -> str:
+    shadow, dispatch = _split_policy_key(policy)
+    shadow_key = shadow.lower() if isinstance(shadow, str) else ""
+    dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
+
+    if shadow_key == "opt" and dispatch_key == "opt":
+        return "OPT"
+
+    def _format_shadow(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_SHADOW_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    def _format_dispatch(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_DISPATCH_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    shadow_label = _format_shadow(shadow)
+    dispatch_label = _format_dispatch(dispatch)
+
+    if shadow_label and dispatch_label:
+        return f"{shadow_label} + {dispatch_label}"
+    return shadow_label or dispatch_label or policy
+
+
+def _build_style_mappings(policies: Iterable[str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    split = [_split_policy_key(p) for p in policies]
+    shadows = [shadow for shadow, _ in split]
+    dispatches = sorted({dispatch for _, dispatch in split})
+
+    color_map = _assign_shadow_colors(shadows)
+    for shadow in shadows:
+        if shadow not in color_map and isinstance(shadow, str) and shadow:
+            color_map[shadow] = "#636363"
+
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    linestyles = ["-", "--", "-.", ":"]
+    style_cycle = list(product(markers, linestyles)) or [("o", "-")]
+    style_map: dict[str, tuple[str, str]] = {}
+    for idx, dispatch in enumerate(dispatches):
+        marker, linestyle = style_cycle[idx % len(style_cycle)]
+        style_map[dispatch] = (marker, linestyle)
+
+    return color_map, style_map
 
 
 def _parse_policy_filter(text: str) -> set[str] | None:
@@ -353,6 +511,8 @@ def _plot_metric_sweep(
         if std_candidate in df.columns:
             std_col = std_candidate
 
+    metric_base = metric[len("mean_") :] if metric.startswith("mean_") else metric
+
     by_policy: dict[str, list[pd.Series]] = defaultdict(list)
     for _, row in df.iterrows():
         policy = _policy_key(row)
@@ -362,8 +522,14 @@ def _plot_metric_sweep(
 
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
 
+    policies = sorted(by_policy.keys())
+    color_map, style_map = _build_style_mappings(policies)
+
     drew_any = False
-    for policy, rows in sorted(by_policy.items()):
+    log_candidates_x: list[np.ndarray] = []
+    log_candidates_y: list[np.ndarray] = []
+    for policy in policies:
+        rows = by_policy[policy]
         policy_df = pd.DataFrame(rows)
         xs = pd.to_numeric(policy_df.get("param_value"), errors="coerce")
         ys = pd.to_numeric(policy_df.get(metric), errors="coerce")
@@ -409,42 +575,64 @@ def _plot_metric_sweep(
         else:
             yerr = None
 
-        ax.errorbar(xs, ys, yerr=yerr, fmt="-o", capsize=3, label=policy)
+        shadow, dispatch = _split_policy_key(policy)
+        color = color_map.get(shadow)
+        marker, linestyle = style_map.get(dispatch, ("o", "-"))
+
+        ax.errorbar(
+            xs,
+            ys,
+            yerr=yerr,
+            color=color,
+            marker=marker,
+            linestyle=linestyle,
+            capsize=3,
+            label=_format_policy_label(policy),
+        )
         drew_any = True
+
+        if metric_base == "time-s":
+            log_candidates_x.append(xs)
+            log_candidates_y.append(ys)
 
     if not drew_any:
         raise ValueError(f"No sweep data available to plot metric '{metric}'.")
 
     param_name = df.get("param", pd.Series(dtype=object)).dropna().unique()
     if len(param_name) == 1:
-        x_label = str(param_name[0])
+        x_label = _format_param_label(str(param_name[0]))
     else:
         x_label = "param_value"
     ax.set_xlabel(x_label)
 
-    y_label = metric.replace("mean_", "").replace("_", " ")
+    y_label = _format_metric_label(metric)
     ax.set_ylabel(y_label)
 
-    if title and title.strip() and metric.lower() != "all":
-        ax.set_title(title.strip())
-    else:
-        ax.set_title(f"{y_label} vs {x_label}")
+    if metric_base == "time-s" and log_candidates_x and log_candidates_y:
+        all_x = np.concatenate(log_candidates_x)
+        all_y = np.concatenate(log_candidates_y)
+        if np.all(all_x > 0) and np.all(all_y > 0):
+            ax.set_xscale("log")
+            ax.set_yscale("log")
 
     ax.grid(True, which="both", alpha=0.3)
 
     if drew_any and show_legend:
+        ncol = max(1, min(4, len(policies)))
         ax.legend(
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.22),
             borderaxespad=0,
             fontsize=9,
             frameon=False,
+            ncol=ncol,
         )
-    fig.tight_layout(rect=(0, 0, 0.8, 1))
+
+    fig.tight_layout(pad=0.8)
 
     out_path = _compute_out_path(csv_hint, metric, out_arg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=160)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
