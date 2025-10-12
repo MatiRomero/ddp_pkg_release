@@ -144,6 +144,33 @@ _PARAM_LABELS: dict[str, str] = {
 }
 
 
+_SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
+    # Keep policy colours stable across plots for recognisable comparisons.
+    "opt": ("#111111",),
+    "naive": ("#f59e0b", "#d97706"),
+    "pb": ("#2563eb", "#1d4ed8", "#3b82f6", "#60a5fa"),
+    "hd": ("#16a34a", "#15803d", "#22c55e"),
+    "ad": ("#d946ef", "#a21caf", "#c084fc"),
+}
+
+
+_POLICY_SHADOW_LABELS: dict[str, str] = {
+    "opt": "OPT",
+    "naive": "NAIVE",
+    "pb": "PB",
+    "hd": "HD",
+    "ad": "AD",
+}
+
+
+_POLICY_DISPATCH_LABELS: dict[str, str] = {
+    "batch": "BAT",
+    "rbatch": "RBAT",
+    "greedy": "GRE",
+    "opt": "OPT",
+}
+
+
 def _format_metric_label(metric: str) -> str:
     base = metric
     if base.startswith("mean_"):
@@ -167,23 +194,87 @@ def _split_policy_key(policy: str) -> tuple[str, str]:
     return policy, ""
 
 
-def _build_style_mappings(policies: Iterable[str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
-    shadows = sorted({shadow for shadow, _ in (_split_policy_key(p) for p in policies)})
-    dispatches = sorted({dispatch for _, dispatch in (_split_policy_key(p) for p in policies)})
+def _shadow_family(shadow: str) -> str | None:
+    lowered = shadow.lower()
+    for family in _SHADOW_COLOR_FAMILIES:
+        if lowered == family:
+            return family
+        if lowered.startswith(f"{family}+"):
+            return family
+        if lowered.startswith(f"{family}-"):
+            return family
+        if lowered.startswith(f"{family}_"):
+            return family
+    return None
 
-    color_cycle = plt.rcParams.get("axes.prop_cycle")
-    default_colors = []
-    if color_cycle:
-        default_colors = color_cycle.by_key().get("color", [])
 
+def _assign_shadow_colors(shadows: Iterable[str]) -> dict[str, str]:
+    unique = sorted({s for s in shadows if isinstance(s, str) and s})
     color_map: dict[str, str] = {}
-    if shadows:
-        if default_colors and len(default_colors) >= len(shadows):
-            palette = [default_colors[i] for i in range(len(shadows))]
-        else:
-            cmap = plt.get_cmap("tab20", max(len(shadows), 1))
-            palette = [cmap(i) for i in range(len(shadows))]
-        color_map = {shadow: palette[i % len(palette)] for i, shadow in enumerate(shadows)}
+
+    for family, palette in _SHADOW_COLOR_FAMILIES.items():
+        members = [s for s in unique if _shadow_family(s) == family]
+        if not members:
+            continue
+        for idx, member in enumerate(members):
+            color_map[member] = palette[idx % len(palette)]
+
+    remaining = [s for s in unique if s not in color_map]
+    if remaining:
+        color_cycle = plt.rcParams.get("axes.prop_cycle")
+        default_colors = color_cycle.by_key().get("color", []) if color_cycle else []
+        if not default_colors:
+            cmap = plt.get_cmap("tab20", max(len(remaining), 1))
+            default_colors = [cmap(i) for i in range(len(remaining))]
+        for idx, shadow in enumerate(remaining):
+            color_map[shadow] = default_colors[idx % len(default_colors)]
+
+    return color_map
+
+
+def _format_policy_label(policy: str) -> str:
+    shadow, dispatch = _split_policy_key(policy)
+    shadow_key = shadow.lower() if isinstance(shadow, str) else ""
+    dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
+
+    if shadow_key == "opt" and dispatch_key == "opt":
+        return "OPT"
+
+    def _format_shadow(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_SHADOW_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    def _format_dispatch(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_DISPATCH_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    shadow_label = _format_shadow(shadow)
+    dispatch_label = _format_dispatch(dispatch)
+
+    if shadow_label and dispatch_label:
+        return f"{shadow_label} + {dispatch_label}"
+    return shadow_label or dispatch_label or policy
+
+
+def _build_style_mappings(policies: Iterable[str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    split = [_split_policy_key(p) for p in policies]
+    shadows = [shadow for shadow, _ in split]
+    dispatches = sorted({dispatch for _, dispatch in split})
+
+    color_map = _assign_shadow_colors(shadows)
+    for shadow in shadows:
+        if shadow not in color_map and isinstance(shadow, str) and shadow:
+            color_map[shadow] = "#636363"
 
     markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
     linestyles = ["-", "--", "-.", ":"]
@@ -492,7 +583,7 @@ def _plot_metric_sweep(
             marker=marker,
             linestyle=linestyle,
             capsize=3,
-            label=policy,
+            label=_format_policy_label(policy),
         )
         drew_any = True
 
