@@ -511,6 +511,8 @@ def _plot_metric_sweep(
         if std_candidate in df.columns:
             std_col = std_candidate
 
+    metric_base = metric[len("mean_") :] if metric.startswith("mean_") else metric
+
     by_policy: dict[str, list[pd.Series]] = defaultdict(list)
     for _, row in df.iterrows():
         policy = _policy_key(row)
@@ -524,6 +526,8 @@ def _plot_metric_sweep(
     color_map, style_map = _build_style_mappings(policies)
 
     drew_any = False
+    log_candidates_x: list[np.ndarray] = []
+    log_candidates_y: list[np.ndarray] = []
     for policy in policies:
         rows = by_policy[policy]
         policy_df = pd.DataFrame(rows)
@@ -587,6 +591,10 @@ def _plot_metric_sweep(
         )
         drew_any = True
 
+        if metric_base == "time-s":
+            log_candidates_x.append(xs)
+            log_candidates_y.append(ys)
+
     if not drew_any:
         raise ValueError(f"No sweep data available to plot metric '{metric}'.")
 
@@ -599,6 +607,13 @@ def _plot_metric_sweep(
 
     y_label = _format_metric_label(metric)
     ax.set_ylabel(y_label)
+
+    if metric_base == "time-s" and log_candidates_x and log_candidates_y:
+        all_x = np.concatenate(log_candidates_x)
+        all_y = np.concatenate(log_candidates_y)
+        if np.all(all_x > 0) and np.all(all_y > 0):
+            ax.set_xscale("log")
+            ax.set_yscale("log")
 
     ax.grid(True, which="both", alpha=0.3)
 
