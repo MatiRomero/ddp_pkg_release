@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 
@@ -147,11 +148,55 @@ _PARAM_LABELS: dict[str, str] = {
 _SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
     # Keep policy colours stable across plots for recognisable comparisons.
     "opt": ("#111111",),
-    "naive": ("#f59e0b", "#d97706"),
-    "pb": ("#2563eb", "#1d4ed8", "#3b82f6", "#60a5fa"),
-    "hd": ("#16a34a", "#15803d", "#22c55e"),
-    "ad": ("#d946ef", "#a21caf", "#c084fc"),
+    "naive": ("#f59e0b",),
+    "pb": ("#2563eb",),
+    "hd": ("#16a34a",),
+    "ad": ("#d946ef",),
 }
+
+
+@dataclass(frozen=True)
+class _DispatchStyle:
+    linestyle: str
+    color_factor: float = 1.0
+    marker_scale: float = 1.0
+
+
+_DISPATCH_STYLES: dict[str, _DispatchStyle] = {
+    "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    "batch": _DispatchStyle(linestyle=":", color_factor=0.55, marker_scale=1.55),
+    "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
+    "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+}
+
+
+_FALLBACK_DISPATCH_STYLES: tuple[_DispatchStyle, ...] = (
+    _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle="--", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle="-.", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle=":", color_factor=1.0, marker_scale=1.0),
+)
+
+
+_UNKNOWN_DISPATCH_CACHE: dict[str, _DispatchStyle] = {}
+
+
+_SHADOW_MARKERS: dict[str, str] = {
+    "naive": "o",
+    "pb": "^",
+    "hd": "s",
+    "ad": "x",
+    "opt": "D",
+}
+
+
+_BASE_MARKERSIZE = 6.5
+
+
+_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "batch", "rbatch", "opt")
+
+
+_SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt")
 
 
 _POLICY_SHADOW_LABELS: dict[str, str] = {
@@ -212,24 +257,70 @@ def _assign_shadow_colors(shadows: Iterable[str]) -> dict[str, str]:
     unique = sorted({s for s in shadows if isinstance(s, str) and s})
     color_map: dict[str, str] = {}
 
-    for family, palette in _SHADOW_COLOR_FAMILIES.items():
-        members = [s for s in unique if _shadow_family(s) == family]
-        if not members:
-            continue
-        for idx, member in enumerate(members):
-            color_map[member] = palette[idx % len(palette)]
+    fallback_colors: list[str] = []
+    color_cycle = plt.rcParams.get("axes.prop_cycle")
+    if color_cycle:
+        fallback_colors = color_cycle.by_key().get("color", []) or []
+    if not fallback_colors:
+        cmap = plt.get_cmap("tab20", max(len(unique), 1))
+        fallback_colors = [cmap(i) for i in range(len(unique))]
 
-    remaining = [s for s in unique if s not in color_map]
-    if remaining:
-        color_cycle = plt.rcParams.get("axes.prop_cycle")
-        default_colors = color_cycle.by_key().get("color", []) if color_cycle else []
-        if not default_colors:
-            cmap = plt.get_cmap("tab20", max(len(remaining), 1))
-            default_colors = [cmap(i) for i in range(len(remaining))]
-        for idx, shadow in enumerate(remaining):
-            color_map[shadow] = default_colors[idx % len(default_colors)]
+    fallback_iter = iter(fallback_colors)
+
+    for shadow in unique:
+        family = _shadow_family(shadow)
+        if family and family in _SHADOW_COLOR_FAMILIES:
+            color_map[shadow] = _SHADOW_COLOR_FAMILIES[family][0]
+        else:
+            try:
+                color_map[shadow] = next(fallback_iter)
+            except StopIteration:
+                cmap = plt.get_cmap("tab20", max(len(unique), 1))
+                color_map[shadow] = cmap(len(color_map) % max(len(unique), 1))
 
     return color_map
+
+
+def _shadow_marker(shadow: str) -> str:
+    family = _shadow_family(shadow)
+    if family and family in _SHADOW_MARKERS:
+        return _SHADOW_MARKERS[family]
+    return _SHADOW_MARKERS.get(shadow.lower(), "o")
+
+
+def _scale_color(color: str | tuple[float, float, float] | tuple[float, float, float, float], factor: float) -> tuple[float, float, float, float]:
+    rgba = mcolors.to_rgba(color)
+    r, g, b, a = rgba
+    r = min(max(r * factor, 0.0), 1.0)
+    g = min(max(g * factor, 0.0), 1.0)
+    b = min(max(b * factor, 0.0), 1.0)
+    return (r, g, b, a)
+
+
+def _dispatch_style(dispatch: str) -> _DispatchStyle:
+    key = dispatch.lower() if isinstance(dispatch, str) else ""
+    style = _DISPATCH_STYLES.get(key)
+    if style:
+        return style
+
+    cached = _UNKNOWN_DISPATCH_CACHE.get(key)
+    if cached:
+        return cached
+
+    idx = len(_UNKNOWN_DISPATCH_CACHE) % len(_FALLBACK_DISPATCH_STYLES)
+    style = _FALLBACK_DISPATCH_STYLES[idx]
+    _UNKNOWN_DISPATCH_CACHE[key] = style
+    return style
+
+
+def _policy_sort_key(policy: str) -> tuple[int, int, str]:
+    shadow, dispatch = _split_policy_key(policy)
+    shadow_family = _shadow_family(shadow) or (shadow.lower() if isinstance(shadow, str) else "")
+    dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
+
+    dispatch_idx = _DISPATCH_ORDER.index(dispatch_key) if dispatch_key in _DISPATCH_ORDER else len(_DISPATCH_ORDER)
+    shadow_idx = _SHADOW_ORDER.index(shadow_family) if shadow_family in _SHADOW_ORDER else len(_SHADOW_ORDER)
+    return (dispatch_idx, shadow_idx, policy)
 
 
 def _format_policy_label(policy: str) -> str:
@@ -266,25 +357,13 @@ def _format_policy_label(policy: str) -> str:
     return shadow_label or dispatch_label or policy
 
 
-def _build_style_mappings(policies: Iterable[str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
-    split = [_split_policy_key(p) for p in policies]
-    shadows = [shadow for shadow, _ in split]
-    dispatches = sorted({dispatch for _, dispatch in split})
-
+def _build_style_mappings(policies: Iterable[str]) -> dict[str, str]:
+    shadows = [shadow for shadow, _ in [_split_policy_key(p) for p in policies]]
     color_map = _assign_shadow_colors(shadows)
     for shadow in shadows:
         if shadow not in color_map and isinstance(shadow, str) and shadow:
             color_map[shadow] = "#636363"
-
-    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
-    linestyles = ["-", "--", "-.", ":"]
-    style_cycle = list(product(markers, linestyles)) or [("o", "-")]
-    style_map: dict[str, tuple[str, str]] = {}
-    for idx, dispatch in enumerate(dispatches):
-        marker, linestyle = style_cycle[idx % len(style_cycle)]
-        style_map[dispatch] = (marker, linestyle)
-
-    return color_map, style_map
+    return color_map
 
 
 def _parse_policy_filter(text: str) -> set[str] | None:
@@ -522,8 +601,8 @@ def _plot_metric_sweep(
 
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
 
-    policies = sorted(by_policy.keys())
-    color_map, style_map = _build_style_mappings(policies)
+    policies = sorted(by_policy.keys(), key=_policy_sort_key)
+    color_map = _build_style_mappings(policies)
 
     drew_any = False
     log_candidates_x: list[np.ndarray] = []
@@ -576,18 +655,33 @@ def _plot_metric_sweep(
             yerr = None
 
         shadow, dispatch = _split_policy_key(policy)
-        color = color_map.get(shadow)
-        marker, linestyle = style_map.get(dispatch, ("o", "-"))
+        label = _format_policy_label(policy)
+
+        if shadow == "opt" and dispatch == "opt":
+            marker = _SHADOW_MARKERS["opt"]
+            linestyle = _DISPATCH_STYLES["opt"].linestyle
+            final_color = mcolors.to_rgba(_SHADOW_COLOR_FAMILIES["opt"][0])
+            markersize = _BASE_MARKERSIZE * _DISPATCH_STYLES["opt"].marker_scale
+        else:
+            base_color = color_map.get(shadow, "#636363")
+            dispatch_style = _dispatch_style(dispatch)
+            final_color = _scale_color(base_color, dispatch_style.color_factor)
+            marker = _shadow_marker(shadow)
+            linestyle = dispatch_style.linestyle
+            markersize = _BASE_MARKERSIZE * dispatch_style.marker_scale
 
         ax.errorbar(
             xs,
             ys,
             yerr=yerr,
-            color=color,
+            color=final_color,
             marker=marker,
             linestyle=linestyle,
+            markersize=markersize,
+            markerfacecolor=final_color,
+            markeredgecolor=final_color,
             capsize=3,
-            label=_format_policy_label(policy),
+            label=label,
         )
         drew_any = True
 
