@@ -27,6 +27,7 @@ import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Iterable, Sequence
 
