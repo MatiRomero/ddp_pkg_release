@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import numpy as np
 import pandas as pd
 
@@ -127,6 +128,241 @@ def _policy_key(row: pd.Series) -> str:
     shadow = row.get("shadow", pd.NA)
     dispatch = row.get("dispatch", pd.NA)
     return f"{shadow}+{dispatch}"
+
+
+_METRIC_LABELS: dict[str, str] = {
+    "savings": "total reward",
+    "pooled_pct": "match rate",
+    "ratio_lp": "LP Ratio",
+    "ratio_opt": "Ratio",
+    "time-s": "Running Time (s)",
+}
+
+
+_PARAM_LABELS: dict[str, str] = {
+    "d": "Time window (s)",
+}
+
+
+_SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
+    # Keep policy colours stable across plots for recognisable comparisons.
+    "opt": ("#111111",),
+    "naive": ("#f59e0b",),
+    "pb": ("#2563eb",),
+    "hd": ("#16a34a",),
+    "ad": ("#d946ef",),
+}
+
+
+@dataclass(frozen=True)
+class _DispatchStyle:
+    linestyle: str
+    color_factor: float = 1.0
+    marker_scale: float = 1.0
+
+
+_DISPATCH_STYLES: dict[str, _DispatchStyle] = {
+    "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    "batch": _DispatchStyle(linestyle=":", color_factor=0.55, marker_scale=1.55),
+    "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
+    "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+}
+
+
+_FALLBACK_DISPATCH_STYLES: tuple[_DispatchStyle, ...] = (
+    _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle="--", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle="-.", color_factor=1.0, marker_scale=1.0),
+    _DispatchStyle(linestyle=":", color_factor=1.0, marker_scale=1.0),
+)
+
+
+_UNKNOWN_DISPATCH_CACHE: dict[str, _DispatchStyle] = {}
+
+
+_SHADOW_MARKERS: dict[str, str] = {
+    "naive": "o",
+    "pb": "^",
+    "hd": "s",
+    "ad": "x",
+    "opt": "D",
+}
+
+
+_BASE_MARKERSIZE = 6.5
+
+
+_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "batch", "rbatch", "opt")
+
+
+_SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt")
+
+
+_POLICY_SHADOW_LABELS: dict[str, str] = {
+    "opt": "OPT",
+    "naive": "NAIVE",
+    "pb": "PB",
+    "hd": "HD",
+    "ad": "AD",
+}
+
+
+_POLICY_DISPATCH_LABELS: dict[str, str] = {
+    "batch": "BAT",
+    "rbatch": "RBAT",
+    "greedy": "GRE",
+    "opt": "OPT",
+}
+
+
+def _format_metric_label(metric: str) -> str:
+    base = metric
+    if base.startswith("mean_"):
+        base = base[len("mean_") :]
+    label = _METRIC_LABELS.get(base)
+    if label:
+        return label
+    return base.replace("_", " ")
+
+
+def _format_param_label(param: str | None) -> str:
+    if not param:
+        return "param_value"
+    return _PARAM_LABELS.get(param, param)
+
+
+def _split_policy_key(policy: str) -> tuple[str, str]:
+    if "+" in policy:
+        shadow, dispatch = policy.split("+", 1)
+        return shadow, dispatch
+    return policy, ""
+
+
+def _shadow_family(shadow: str) -> str | None:
+    lowered = shadow.lower()
+    for family in _SHADOW_COLOR_FAMILIES:
+        if lowered == family:
+            return family
+        if lowered.startswith(f"{family}+"):
+            return family
+        if lowered.startswith(f"{family}-"):
+            return family
+        if lowered.startswith(f"{family}_"):
+            return family
+    return None
+
+
+def _assign_shadow_colors(shadows: Iterable[str]) -> dict[str, str]:
+    unique = sorted({s for s in shadows if isinstance(s, str) and s})
+    color_map: dict[str, str] = {}
+
+    fallback_colors: list[str] = []
+    color_cycle = plt.rcParams.get("axes.prop_cycle")
+    if color_cycle:
+        fallback_colors = color_cycle.by_key().get("color", []) or []
+    if not fallback_colors:
+        cmap = plt.get_cmap("tab20", max(len(unique), 1))
+        fallback_colors = [cmap(i) for i in range(len(unique))]
+
+    fallback_iter = iter(fallback_colors)
+
+    for shadow in unique:
+        family = _shadow_family(shadow)
+        if family and family in _SHADOW_COLOR_FAMILIES:
+            color_map[shadow] = _SHADOW_COLOR_FAMILIES[family][0]
+        else:
+            try:
+                color_map[shadow] = next(fallback_iter)
+            except StopIteration:
+                cmap = plt.get_cmap("tab20", max(len(unique), 1))
+                color_map[shadow] = cmap(len(color_map) % max(len(unique), 1))
+
+    return color_map
+
+
+def _shadow_marker(shadow: str) -> str:
+    family = _shadow_family(shadow)
+    if family and family in _SHADOW_MARKERS:
+        return _SHADOW_MARKERS[family]
+    return _SHADOW_MARKERS.get(shadow.lower(), "o")
+
+
+def _scale_color(color: str | tuple[float, float, float] | tuple[float, float, float, float], factor: float) -> tuple[float, float, float, float]:
+    rgba = mcolors.to_rgba(color)
+    r, g, b, a = rgba
+    r = min(max(r * factor, 0.0), 1.0)
+    g = min(max(g * factor, 0.0), 1.0)
+    b = min(max(b * factor, 0.0), 1.0)
+    return (r, g, b, a)
+
+
+def _dispatch_style(dispatch: str) -> _DispatchStyle:
+    key = dispatch.lower() if isinstance(dispatch, str) else ""
+    style = _DISPATCH_STYLES.get(key)
+    if style:
+        return style
+
+    cached = _UNKNOWN_DISPATCH_CACHE.get(key)
+    if cached:
+        return cached
+
+    idx = len(_UNKNOWN_DISPATCH_CACHE) % len(_FALLBACK_DISPATCH_STYLES)
+    style = _FALLBACK_DISPATCH_STYLES[idx]
+    _UNKNOWN_DISPATCH_CACHE[key] = style
+    return style
+
+
+def _policy_sort_key(policy: str) -> tuple[int, int, str]:
+    shadow, dispatch = _split_policy_key(policy)
+    shadow_family = _shadow_family(shadow) or (shadow.lower() if isinstance(shadow, str) else "")
+    dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
+
+    dispatch_idx = _DISPATCH_ORDER.index(dispatch_key) if dispatch_key in _DISPATCH_ORDER else len(_DISPATCH_ORDER)
+    shadow_idx = _SHADOW_ORDER.index(shadow_family) if shadow_family in _SHADOW_ORDER else len(_SHADOW_ORDER)
+    return (dispatch_idx, shadow_idx, policy)
+
+
+def _format_policy_label(policy: str) -> str:
+    shadow, dispatch = _split_policy_key(policy)
+    shadow_key = shadow.lower() if isinstance(shadow, str) else ""
+    dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
+
+    if shadow_key == "opt" and dispatch_key == "opt":
+        return "OPT"
+
+    def _format_shadow(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_SHADOW_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    def _format_dispatch(name: str) -> str:
+        if not name:
+            return ""
+        key = name.lower()
+        mapped = _POLICY_DISPATCH_LABELS.get(key)
+        if mapped:
+            return mapped
+        return name.upper().replace("_", " ")
+
+    shadow_label = _format_shadow(shadow)
+    dispatch_label = _format_dispatch(dispatch)
+
+    if shadow_label and dispatch_label:
+        return f"{shadow_label} + {dispatch_label}"
+    return shadow_label or dispatch_label or policy
+
+
+def _build_style_mappings(policies: Iterable[str]) -> dict[str, str]:
+    shadows = [shadow for shadow, _ in [_split_policy_key(p) for p in policies]]
+    color_map = _assign_shadow_colors(shadows)
+    for shadow in shadows:
+        if shadow not in color_map and isinstance(shadow, str) and shadow:
+            color_map[shadow] = "#636363"
+    return color_map
 
 
 def _parse_policy_filter(text: str) -> set[str] | None:
@@ -353,6 +589,8 @@ def _plot_metric_sweep(
         if std_candidate in df.columns:
             std_col = std_candidate
 
+    metric_base = metric[len("mean_") :] if metric.startswith("mean_") else metric
+
     by_policy: dict[str, list[pd.Series]] = defaultdict(list)
     for _, row in df.iterrows():
         policy = _policy_key(row)
@@ -362,8 +600,14 @@ def _plot_metric_sweep(
 
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
 
+    policies = sorted(by_policy.keys(), key=_policy_sort_key)
+    color_map = _build_style_mappings(policies)
+
     drew_any = False
-    for policy, rows in sorted(by_policy.items()):
+    log_candidates_x: list[np.ndarray] = []
+    log_candidates_y: list[np.ndarray] = []
+    for policy in policies:
+        rows = by_policy[policy]
         policy_df = pd.DataFrame(rows)
         xs = pd.to_numeric(policy_df.get("param_value"), errors="coerce")
         ys = pd.to_numeric(policy_df.get(metric), errors="coerce")
@@ -409,42 +653,79 @@ def _plot_metric_sweep(
         else:
             yerr = None
 
-        ax.errorbar(xs, ys, yerr=yerr, fmt="-o", capsize=3, label=policy)
+        shadow, dispatch = _split_policy_key(policy)
+        label = _format_policy_label(policy)
+
+        if shadow == "opt" and dispatch == "opt":
+            marker = _SHADOW_MARKERS["opt"]
+            linestyle = _DISPATCH_STYLES["opt"].linestyle
+            final_color = mcolors.to_rgba(_SHADOW_COLOR_FAMILIES["opt"][0])
+            markersize = _BASE_MARKERSIZE * _DISPATCH_STYLES["opt"].marker_scale
+        else:
+            base_color = color_map.get(shadow, "#636363")
+            dispatch_style = _dispatch_style(dispatch)
+            final_color = _scale_color(base_color, dispatch_style.color_factor)
+            marker = _shadow_marker(shadow)
+            linestyle = dispatch_style.linestyle
+            markersize = _BASE_MARKERSIZE * dispatch_style.marker_scale
+
+        ax.errorbar(
+            xs,
+            ys,
+            yerr=yerr,
+            color=final_color,
+            marker=marker,
+            linestyle=linestyle,
+            markersize=markersize,
+            markerfacecolor=final_color,
+            markeredgecolor=final_color,
+            capsize=3,
+            label=label,
+        )
         drew_any = True
+
+        if metric_base == "time-s":
+            log_candidates_x.append(xs)
+            log_candidates_y.append(ys)
 
     if not drew_any:
         raise ValueError(f"No sweep data available to plot metric '{metric}'.")
 
     param_name = df.get("param", pd.Series(dtype=object)).dropna().unique()
     if len(param_name) == 1:
-        x_label = str(param_name[0])
+        x_label = _format_param_label(str(param_name[0]))
     else:
         x_label = "param_value"
     ax.set_xlabel(x_label)
 
-    y_label = metric.replace("mean_", "").replace("_", " ")
+    y_label = _format_metric_label(metric)
     ax.set_ylabel(y_label)
 
-    if title and title.strip() and metric.lower() != "all":
-        ax.set_title(title.strip())
-    else:
-        ax.set_title(f"{y_label} vs {x_label}")
+    if metric_base == "time-s" and log_candidates_x and log_candidates_y:
+        all_x = np.concatenate(log_candidates_x)
+        all_y = np.concatenate(log_candidates_y)
+        if np.all(all_x > 0) and np.all(all_y > 0):
+            ax.set_xscale("log")
+            ax.set_yscale("log")
 
     ax.grid(True, which="both", alpha=0.3)
 
     if drew_any and show_legend:
+        ncol = max(1, min(4, len(policies)))
         ax.legend(
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="lower center",
+            bbox_to_anchor=(0.5, 1.22),
             borderaxespad=0,
             fontsize=9,
             frameon=False,
+            ncol=ncol,
         )
-    fig.tight_layout(rect=(0, 0, 0.8, 1))
+
+    fig.tight_layout(pad=0.8)
 
     out_path = _compute_out_path(csv_hint, metric, out_arg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=160)
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
