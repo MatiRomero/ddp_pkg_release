@@ -656,6 +656,8 @@ def _plot_metric_sweep(
 
         shadow, dispatch = _split_policy_key(policy)
         label = _format_policy_label(policy)
+        shadow_family = _shadow_family(shadow) if isinstance(shadow, str) else None
+        is_hd_shadow = shadow_family == "hd"
 
         if shadow == "opt" and dispatch == "opt":
             marker = _SHADOW_MARKERS["opt"]
@@ -666,23 +668,34 @@ def _plot_metric_sweep(
             base_color = color_map.get(shadow, "#636363")
             dispatch_style = _dispatch_style(dispatch)
             final_color = _scale_color(base_color, dispatch_style.color_factor)
-            marker = _shadow_marker(shadow)
-            linestyle = dispatch_style.linestyle
+            marker = None if is_hd_shadow else _shadow_marker(shadow)
+            linestyle = "-." if is_hd_shadow else dispatch_style.linestyle
             markersize = _BASE_MARKERSIZE * dispatch_style.marker_scale
 
-        ax.errorbar(
-            xs,
-            ys,
-            yerr=yerr,
-            color=final_color,
-            marker=marker,
-            linestyle=linestyle,
-            markersize=markersize,
-            markerfacecolor=final_color,
-            markeredgecolor=final_color,
-            capsize=3,
-            label=label,
-        )
+        if is_hd_shadow:
+            yerr = None
+            ax.plot(
+                xs,
+                ys,
+                color=final_color,
+                linestyle=linestyle,
+                marker=marker,
+                label=label,
+            )
+        else:
+            ax.errorbar(
+                xs,
+                ys,
+                yerr=yerr,
+                color=final_color,
+                marker=marker,
+                linestyle=linestyle,
+                markersize=markersize,
+                markerfacecolor=final_color,
+                markeredgecolor=final_color,
+                capsize=3,
+                label=label,
+            )
         drew_any = True
 
         if metric_base == "time-s":
@@ -701,6 +714,9 @@ def _plot_metric_sweep(
 
     y_label = _format_metric_label(metric)
     ax.set_ylabel(y_label)
+
+    if "ratio" in metric_base.lower():
+        ax.set_ylim(top=1.0)
 
     if metric_base == "time-s" and log_candidates_x and log_candidates_y:
         all_x = np.concatenate(log_candidates_x)

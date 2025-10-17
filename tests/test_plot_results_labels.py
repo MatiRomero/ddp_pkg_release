@@ -144,3 +144,95 @@ def test_sweep_styles_follow_dispatch_and_shadow_patterns(tmp_path, monkeypatch)
 
     opt_color = mcolors.to_rgb(calls[4]["color"])
     assert opt_color == (0.06666666666666667, 0.06666666666666667, 0.06666666666666667)
+
+
+def test_hd_shadow_uses_dashdot_line_without_errorbar(tmp_path, monkeypatch):
+    from matplotlib.axes import Axes
+
+    errorbar_calls: list[dict[str, object]] = []
+    plot_calls: list[dict[str, object]] = []
+
+    original_errorbar = Axes.errorbar
+    original_plot = Axes.plot
+
+    def capture_errorbar(self, *args, **kwargs):
+        errorbar_calls.append(kwargs)
+        return original_errorbar(self, *args, **kwargs)
+
+    def capture_plot(self, *args, **kwargs):
+        plot_calls.append(kwargs)
+        return original_plot(self, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "errorbar", capture_errorbar)
+    monkeypatch.setattr(Axes, "plot", capture_plot)
+
+    df = pd.DataFrame(
+        [
+            {
+                "param": "d",
+                "param_value": 10.0,
+                "shadow": "hd",
+                "dispatch": "greedy",
+                "mean_savings": 1.1,
+                "std_savings": 0.05,
+                "trial_count": 10,
+            }
+        ]
+    )
+
+    out_path = tmp_path / "plot.png"
+    plot_results._plot_metric_sweep(
+        df,
+        "mean_savings",
+        include=None,
+        title=None,
+        csv_hint=None,
+        out_arg=str(out_path),
+    )
+
+    assert errorbar_calls == []
+    assert len(plot_calls) == 1
+
+    call_kwargs = plot_calls[0]
+    assert call_kwargs["linestyle"] == "-."
+    assert call_kwargs["marker"] is None
+    assert call_kwargs["label"] == "HD + GRE"
+
+
+def test_ratio_metric_clamps_upper_ylim(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    original_subplots = plot_results.plt.subplots
+
+    def wrapped_subplots(*args, **kwargs):
+        fig, ax = original_subplots(*args, **kwargs)
+        captured["ax"] = ax
+        return fig, ax
+
+    monkeypatch.setattr(plot_results.plt, "subplots", wrapped_subplots)
+
+    df = pd.DataFrame(
+        [
+            {
+                "param": "d",
+                "param_value": 5.0,
+                "shadow": "naive",
+                "dispatch": "greedy",
+                "mean_ratio_opt": 0.95,
+            }
+        ]
+    )
+
+    out_path = tmp_path / "plot.png"
+    plot_results._plot_metric_sweep(
+        df,
+        "mean_ratio_opt",
+        include=None,
+        title=None,
+        csv_hint=None,
+        out_arg=str(out_path),
+    )
+
+    ax = captured["ax"]
+    _, ymax = ax.get_ylim()
+    assert ymax == 1.0

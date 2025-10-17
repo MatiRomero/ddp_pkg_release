@@ -270,8 +270,22 @@ def main(argv: Sequence[str] | None = None) -> None:
             key = (key,)
         sorted_df = series_df.sort_values(x_col)
         label = _format_label(series_columns, key)
-        ax.plot(sorted_df[x_col], sorted_df["mean_value"], marker="o", label=label)
-        if not sorted_df["std_value"].isna().all():
+
+        series_context = {column: value for column, value in zip(series_columns, key)}
+        shadow_label = series_context.get("shadow")
+        is_hd_shadow = (
+            isinstance(shadow_label, str) and shadow_label.strip().lower() == "hd"
+        )
+
+        plot_kwargs = {"label": label}
+        if is_hd_shadow:
+            plot_kwargs.update({"linestyle": "-.", "marker": None})
+        else:
+            plot_kwargs.update({"marker": "o"})
+
+        ax.plot(sorted_df[x_col], sorted_df["mean_value"], **plot_kwargs)
+
+        if not is_hd_shadow and not sorted_df["std_value"].isna().all():
             lower = sorted_df["mean_value"] - sorted_df["std_value"].fillna(0.0)
             upper = sorted_df["mean_value"] + sorted_df["std_value"].fillna(0.0)
             ax.fill_between(sorted_df[x_col], lower, upper, alpha=0.2)
@@ -283,6 +297,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     if series_columns:
         ax.legend(title=", ".join(series_columns))
     ax.grid(True, linestyle="--", alpha=0.5)
+
+    if metric.lower() == "ratio":
+        ax.set_ylim(top=1.0)
+
     fig.tight_layout()
 
     if args.out:
