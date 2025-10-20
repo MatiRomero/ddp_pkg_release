@@ -599,7 +599,7 @@ def _plot_metric_sweep(
             continue
         by_policy[policy].append(row)
 
-    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    fig, ax = plt.subplots(figsize=(6, 5))
 
     policies = sorted(by_policy.keys(), key=_policy_sort_key)
     color_map = _build_style_mappings(policies)
@@ -731,7 +731,7 @@ def _plot_metric_sweep(
         ncol = max(1, min(4, len(policies)))
         ax.legend(
             loc="lower center",
-            bbox_to_anchor=(0.5, 1.22),
+            bbox_to_anchor=(0.5, 1.02),
             borderaxespad=0,
             fontsize=9,
             frameon=False,
