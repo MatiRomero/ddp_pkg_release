@@ -96,7 +96,143 @@ def _load_data(csv_full: str | None, csv_agg: str | None) -> LoadedData:
     numeric_candidates.update(["n", "d", "param_value", "trial_count"])
     _coerce_numeric(df, numeric_candidates)
 
+    df = _augment_with_regret(df, csv_full=csv_full)
+
     return LoadedData(df=df, source=source)
+
+
+def _augment_with_regret(df: pd.DataFrame, *, csv_full: str | None) -> pd.DataFrame:
+    """Ensure aggregated data contains mean/std regret columns when possible."""
+
+    # If regret statistics already exist, simply normalise their dtypes.
+    if "mean_regret" in df.columns:
+        df["mean_regret"] = pd.to_numeric(df["mean_regret"], errors="coerce")
+        if "std_regret" in df.columns:
+            df["std_regret"] = pd.to_numeric(df["std_regret"], errors="coerce")
+        return df
+
+    # Prefer explicitly stored opt gap statistics when available.
+    for base in ("regret", "opt_gap"):
+        mean_col = f"mean_{base}"
+        std_col = f"std_{base}"
+        if mean_col in df.columns:
+            df["mean_regret"] = pd.to_numeric(df[mean_col], errors="coerce")
+            if std_col in df.columns:
+                df["std_regret"] = pd.to_numeric(df[std_col], errors="coerce")
+            return df
+
+    # When the per-trial CSV is available, compute regret directly from the raw data.
+    if csv_full:
+        raw_path = Path(csv_full)
+        if raw_path.exists():
+            raw = pd.read_csv(raw_path)
+
+            regret_series: pd.Series | None = None
+            if "regret" in raw.columns:
+                regret_series = pd.to_numeric(raw["regret"], errors="coerce")
+            elif "opt_gap" in raw.columns:
+                regret_series = pd.to_numeric(raw["opt_gap"], errors="coerce")
+            else:
+                opt_candidates = [
+                    col
+                    for col in ("opt_total", "savings_opt")
+                    if col in raw.columns
+                ]
+                if opt_candidates and "savings" in raw.columns:
+                    opt_series = pd.to_numeric(raw[opt_candidates[0]], errors="coerce")
+                    savings_series = pd.to_numeric(raw["savings"], errors="coerce")
+                    regret_series = opt_series - savings_series
+
+            if regret_series is not None:
+                raw = raw.copy()
+                raw["regret"] = regret_series
+
+                for col in aggregate_results.GROUP_FIELDS:
+                    if col not in raw.columns:
+                        raw[col] = pd.NA
+
+                for col, lower in [("shadow", True), ("dispatch", True), ("param", True)]:
+                    if col in raw.columns:
+                        raw[col] = _clean_category(raw[col], lower=lower)
+
+                numeric_group_cols = [
+                    col
+                    for col in ("n", "d", "param_value", "gamma", "tau", "gamma_plus", "tau_plus")
+                    if col in raw.columns
+                ]
+                _coerce_numeric(raw, numeric_group_cols)
+
+                group_cols: list[str] = []
+                for col in aggregate_results.GROUP_FIELDS:
+                    if col not in df.columns or col not in raw.columns:
+                        continue
+                    df_non_null = df[col].dropna() if col in df.columns else pd.Series(dtype=float)
+                    raw_non_null = raw[col].dropna()
+                    if df_non_null.empty and raw_non_null.empty:
+                        continue
+                    group_cols.append(col)
+
+                if group_cols:
+                    stats = (
+                        raw.groupby(group_cols, dropna=False)["regret"]
+                        .agg(["mean", "std"])
+                        .rename(columns={"mean": "__mean_regret_tmp", "std": "__std_regret_tmp"})
+                        .reset_index()
+                    )
+                    df = df.merge(stats, on=group_cols, how="left")
+
+                    mean_tmp = df.pop("__mean_regret_tmp")
+                    std_tmp = df.pop("__std_regret_tmp")
+
+                    if "mean_regret" in df.columns:
+                        df["mean_regret"] = df["mean_regret"].combine_first(mean_tmp)
+                    else:
+                        df["mean_regret"] = mean_tmp
+
+                    if "std_regret" in df.columns:
+                        df["std_regret"] = df["std_regret"].combine_first(std_tmp)
+                    else:
+                        df["std_regret"] = std_tmp
+
+                    df["mean_regret"] = pd.to_numeric(df["mean_regret"], errors="coerce")
+                    df["std_regret"] = pd.to_numeric(df["std_regret"], errors="coerce")
+                    return df
+
+    # As a final fallback, derive the regret mean from the OPT policy rows if present.
+    if "mean_savings" in df.columns and {"shadow", "dispatch"}.issubset(df.columns):
+        base_cols = [
+            col
+            for col in aggregate_results.GROUP_FIELDS
+            if col in df.columns and col not in {"shadow", "dispatch"}
+        ]
+
+        if base_cols:
+            shadow_series = df["shadow"].astype("string")
+            dispatch_series = df["dispatch"].astype("string")
+            opt_mask = shadow_series.str.lower().eq("opt") & dispatch_series.str.lower().eq("opt")
+
+            if opt_mask.any():
+                opt_lookup: dict[tuple[object, ...], float] = {}
+                for _, opt_row in df.loc[opt_mask, base_cols + ["mean_savings"]].iterrows():
+                    key = tuple(opt_row.get(col) for col in base_cols)
+                    opt_mean = opt_row.get("mean_savings")
+                    if pd.notna(opt_mean):
+                        opt_lookup[key] = float(opt_mean)
+
+                if opt_lookup:
+                    mean_values: list[float] = []
+                    for _, row in df.iterrows():
+                        key = tuple(row.get(col) for col in base_cols)
+                        opt_mean = opt_lookup.get(key)
+                        run_mean = row.get("mean_savings")
+                        if opt_mean is None or pd.isna(run_mean):
+                            mean_values.append(float("nan"))
+                        else:
+                            mean_values.append(opt_mean - float(run_mean))
+
+                    df["mean_regret"] = pd.to_numeric(pd.Series(mean_values, index=df.index), errors="coerce")
+
+    return df
 
 
 def _parse_metric_list(metric_arg: str | None, available: Sequence[str]) -> list[str]:
@@ -137,6 +273,7 @@ _METRIC_LABELS: dict[str, str] = {
     "ratio_lp": "LP Ratio",
     "ratio_opt": "Ratio",
     "time-s": "Running Time (s)",
+    "regret": "Regret",
 }
 
 
