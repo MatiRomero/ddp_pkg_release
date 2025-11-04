@@ -59,6 +59,7 @@ class ParallelSweepTask:
     seed: int
     jobs: Sequence[Job]
     ad_duals_override: AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray | None
+    tau_s: float
 
 
 def _expand_jobs_paths(patterns: Iterable[str]) -> list[Path]:
@@ -107,6 +108,7 @@ def _execute_task(
         print_matches=False,
         gamma=float(task.gamma),
         tau=float(task.tau),
+        tau_s=task.tau_s,
         ad_duals=task.ad_duals_override,
         ad_mapper=ad_mapper,
     )
@@ -143,6 +145,7 @@ def _run_parallel_sweep_from_trial_jobs(
     ]
     | Sequence[AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray]
     | None = None,
+    tau_s: float = 30.0,
     progress: bool = True,
     workers: int | None = None,
 ) -> tuple[
@@ -192,6 +195,7 @@ def _run_parallel_sweep_from_trial_jobs(
                                 seed=seed,
                                 jobs=jobs,
                                 ad_duals_override=ad_duals_override,
+                                tau_s=float(tau_s),
                             )
                         )
 
@@ -263,6 +267,7 @@ def _run_parallel_sweep_from_trial_jobs(
                             "shadow": shadow,
                             "gamma": float(gamma),
                             "tau": float(tau),
+                            "tau_s": float(tau_s),
                             "dispatch": dispatch,
                             "metric": metric,
                             "mean": mean_val,
@@ -310,7 +315,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         default="greedy",
         help="Dispatch policy to evaluate",
     )
@@ -362,6 +367,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Module:function resolving to an average-dual mapper for type-indexed tables."
         ),
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     parser.add_argument(
         "--show",
@@ -474,6 +485,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             ad_duals=ad_duals,
             ad_mapper=ad_mapper,
             trial_jobs=trial_jobs,
+            tau_s=args.tau_s,
             progress=not args.no_progress,
             workers=args.workers,
         )

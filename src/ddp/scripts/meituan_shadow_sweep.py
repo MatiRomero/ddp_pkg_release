@@ -94,7 +94,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         default="greedy",
         help="Dispatch policy to evaluate",
     )
@@ -146,6 +146,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Module:function resolving to an average-dual mapper for type-indexed tables."
         ),
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     parser.add_argument(
         "--show",
@@ -247,6 +253,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             ad_duals=ad_duals,
             ad_mapper=ad_mapper,
             trial_jobs=trial_jobs,
+            tau_s=args.tau_s,
             progress=not args.no_progress,
         )
     except AverageDualError as exc:

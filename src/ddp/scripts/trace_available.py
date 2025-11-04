@@ -89,7 +89,8 @@ def _prepare_dispatch(
     tau: float,
     gamma_plus: float | None,
     tau_plus: float | None,
-) -> tuple[str, str, callable, callable | None, np.ndarray | None]:
+    tau_s: float,
+) -> tuple[str, str, callable, callable | None, np.ndarray | None, float | None]:
     """Return dispatch configuration for :func:`simulate`.
 
     Output is ``(decision_rule, sim_policy, score_fn, weight_fn, sim_shadow)``. ``sim_shadow``
@@ -103,27 +104,33 @@ def _prepare_dispatch(
         sp = sp * gamma_eff + tau_eff
         weight_fn = make_weight_fn_latest_shadow(reward_fn, sp)
         sim_shadow: np.ndarray | None = None
+        tau_s_value: float | None = None
     else:
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[policy]
         tau_eff = tau
         sp = sp * gamma_eff + tau_eff
         weight_fn = make_weight_fn(reward_fn, sp)
         sim_shadow = sp
+        tau_s_value = tau_s if policy in {"batch2", "rbatch2"} else None
 
     score_fn = make_local_score(reward_fn, sp)
 
     if policy == "greedy":
-        return "naive", "score", score_fn, None, None
+        return "naive", "score", score_fn, None, None, None
     if policy == "greedy+":
-        return "threshold", "score", score_fn, None, None
+        return "threshold", "score", score_fn, None, None, None
     if policy == "batch":
-        return "policy", "batch", score_fn, weight_fn, sim_shadow
+        return "policy", "batch", score_fn, weight_fn, sim_shadow, None
+    if policy == "batch2":
+        return "policy", "batch2", score_fn, weight_fn, sim_shadow, tau_s_value
     if policy == "batch+":
-        return "policy", "batch", score_fn, weight_fn, sim_shadow
+        return "policy", "batch", score_fn, weight_fn, sim_shadow, None
     if policy == "rbatch":
-        return "policy", "rbatch", score_fn, weight_fn, sim_shadow
+        return "policy", "rbatch", score_fn, weight_fn, sim_shadow, None
+    if policy == "rbatch2":
+        return "policy", "rbatch2", score_fn, weight_fn, sim_shadow, tau_s_value
     if policy == "rbatch+":
-        return "policy", "rbatch", score_fn, weight_fn, sim_shadow
+        return "policy", "rbatch", score_fn, weight_fn, sim_shadow, None
     raise SystemExit(f"Unsupported policy '{policy}'.")
 
 
@@ -138,7 +145,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--policy",
         required=True,
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         help=(
             "Dispatch policy to trace. The '+ variants use late-arrival shadow "
             "weighting with reward(i, j) - s_late (subtracting only the later "
@@ -157,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
-            "When omitted, uses the policy default (1 for greedy/greedy+, 0.5 for batch/rbatch, 1 for the '+ variants)."
+            "When omitted, uses the policy default (1 for greedy/greedy+, 0.5 for batch/rbatch/batch2/rbatch2, 1 for the '+ variants)."
         ),
     )
     parser.add_argument(
@@ -168,6 +175,12 @@ def main(argv: list[str] | None = None) -> None:
             "Additive offset subtracted from the scaled shadow potentials before dispatch. "
             "Applies uniformly to all shadow families."
         ),
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     parser.add_argument(
         "--plus_gamma",
@@ -241,7 +254,14 @@ def main(argv: list[str] | None = None) -> None:
         ad_mapper=ad_mapper,
     )
 
-    decision_rule, sim_policy, score_fn, weight_fn, sim_shadow = _prepare_dispatch(
+    (
+        decision_rule,
+        sim_policy,
+        score_fn,
+        weight_fn,
+        sim_shadow,
+        tau_s_value,
+    ) = _prepare_dispatch(
         args.policy,
         base_shadow,
         args.shadow,
@@ -249,6 +269,7 @@ def main(argv: list[str] | None = None) -> None:
         args.tau,
         args.plus_gamma,
         args.plus_tau,
+        args.tau_s,
     )
 
     event_log: list[tuple[float, str, int]] = []
@@ -266,6 +287,8 @@ def main(argv: list[str] | None = None) -> None:
         f"Tracing policy={args.policy} with shadow={args.shadow} on {len(jobs)} jobs (d={time_window})."
     )
 
+    tau_s_param = tau_s_value if tau_s_value is not None else args.tau_s
+
     result = simulate(
         jobs,
         score_fn,
@@ -278,6 +301,7 @@ def main(argv: list[str] | None = None) -> None:
         seed=0,
         tie_breaker=args.tie_breaker,
         event_hook=hook,
+        tau_s=tau_s_param,
     )
 
     print("\nDispatch outcome:")

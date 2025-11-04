@@ -193,6 +193,7 @@ def _run_sweep_from_trial_jobs(
     trial_ad_duals: Mapping[int, AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray]
     | Sequence[AverageDualTable | Mapping[object, float] | Sequence[float] | np.ndarray]
     | None = None,
+    tau_s: float = 30.0,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Execute the gamma/tau sweep and return heatmap data, records, and best combos."""
@@ -263,6 +264,7 @@ def _run_sweep_from_trial_jobs(
                                 print_matches=False,
                                 gamma=float(gamma),
                                 tau=float(tau),
+                                tau_s=tau_s,
                                 ad_duals=ad_duals_override,
                                 ad_mapper=ad_mapper,
                             )
@@ -290,6 +292,7 @@ def _run_sweep_from_trial_jobs(
                                 "shadow": shadow,
                                 "gamma": float(gamma),
                                 "tau": float(tau),
+                                "tau_s": float(tau_s),
                                 "dispatch": dispatch,
                                 "metric": metric,
                                 "mean": mean_val,
@@ -324,6 +327,7 @@ def _run_sweep(
     | np.ndarray
     | None,
     ad_mapper: Callable[[Job], str | None] | None,
+    tau_s: float = 30.0,
     progress: bool = True,
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[dict], list[tuple[GeometryPreset, str, float | None, float | None, float | None]]]:
     """Generate synthetic trials then delegate to :func:`_run_sweep_from_trial_jobs`."""
@@ -340,6 +344,7 @@ def _run_sweep(
         ad_duals=ad_duals,
         ad_mapper=ad_mapper,
         trial_jobs=trial_jobs,
+        tau_s=tau_s,
         progress=progress,
     )
 
@@ -416,6 +421,7 @@ def _write_csv(records: Sequence[dict], path: str | None) -> None:
         "shadow",
         "gamma",
         "tau",
+        "tau_s",
         "dispatch",
         "metric",
         "mean",
@@ -449,12 +455,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         default="greedy",
         help=(
             "Dispatch policy to evaluate. '+ variants apply late-arrival shadow "
             "weighting that subtracts only the later job's shadow."
         ),
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     parser.add_argument(
         "--metric",
@@ -612,6 +624,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             shadows=shadows,
             ad_duals=ad_duals,
             ad_mapper=ad_mapper,
+            tau_s=args.tau_s,
         )
     except AverageDualError as exc:
         parser.error(str(exc))

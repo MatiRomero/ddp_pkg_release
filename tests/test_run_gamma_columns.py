@@ -43,16 +43,18 @@ def test_run_instance_records_effective_gamma(tmp_path) -> None:
     assert np.isclose(rows["greedy"]["tau"], -0.5)
     assert rows["greedy"]["gamma_plus"] is None
     assert rows["greedy"]["tau_plus"] is None
+    assert rows["greedy"].get("tau_s") is None
 
     assert rows["batch+"]["gamma"] is None
     assert rows["batch+"]["tau"] is None
     assert np.isclose(rows["batch+"]["gamma_plus"], 1.75)
     assert np.isclose(rows["batch+"]["tau_plus"], 0.25)
+    assert rows["batch+"].get("tau_s") is None
 
     with out_csv.open(newline="") as handle:
         reader = csv.DictReader(handle)
         assert reader.fieldnames is not None
-        for header in ("gamma", "tau", "gamma_plus", "tau_plus"):
+        for header in ("gamma", "tau", "gamma_plus", "tau_plus", "tau_s"):
             assert header in reader.fieldnames
 
 
@@ -74,6 +76,7 @@ def test_run_once_includes_gamma_values() -> None:
     assert row["tau"] is None
     assert np.isclose(row["gamma_plus"], 1.2)
     assert np.isclose(row["tau_plus"], -0.4)
+    assert row.get("tau_s") is None
 
 
 def test_aggregate_groups_by_gamma(tmp_path) -> None:
@@ -86,6 +89,7 @@ def test_aggregate_groups_by_gamma(tmp_path) -> None:
         "tau",
         "gamma_plus",
         "tau_plus",
+        "tau_s",
         "n",
         "d",
         "seed",
@@ -111,6 +115,7 @@ def test_aggregate_groups_by_gamma(tmp_path) -> None:
             "tau": 0.0,
             "gamma_plus": "",
             "tau_plus": "",
+            "tau_s": "",
             "n": 10,
             "d": 300,
             "seed": 0,
@@ -134,6 +139,7 @@ def test_aggregate_groups_by_gamma(tmp_path) -> None:
             "tau": 0.0,
             "gamma_plus": "",
             "tau_plus": "",
+            "tau_s": "",
             "n": 10,
             "d": 300,
             "seed": 1,
