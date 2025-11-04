@@ -256,9 +256,10 @@ python -m ddp.scripts.run_many --trials 20 --n 100 --d 2 --outdir results --save
 #   --flatten_axis {x,y}     → collapse jobs onto a single axis (1-D experiments)
 ```
 
-The default dispatch set covers `greedy`, `greedy+`, `batch`, `batch+`, `rbatch`, and
-`rbatch+`. Policy defaults now scale shadows with γ = 1 for the greedy variants,
-γ = 0.5 for batch/rbatch, and γ = 1 for the late-arrival (`+`) policies unless you
+The default dispatch set covers `greedy`, `greedy+`, `batch`, `batch+`, `rbatch`,
+`rbatch+`, and the periodic variants `batch2`/`rbatch2`. Policy defaults now scale
+shadows with γ = 1 for the greedy variants, γ = 0.5 for batch/rbatch/batch2/rbatch2,
+and γ = 1 for the late-arrival (`+`) policies unless you
 override `--gamma` (shared by the non-`+` policies) or `--plus_gamma`. The
 additive `--tau` offset is subtracted from the scaled potentials for every
 shadow family. The `+` variants apply a "late-arrival"
@@ -282,6 +283,9 @@ This creates one heatmap grid per metric (saved as PNGs in `figs/`), annotated w
 - Batch/rbatch subtract both job shadows when scoring candidate pairs.
 - Batch+/rbatch+ use late-arrival weights so for jobs `(i, j)` the later arrival's
   shadow is subtracted: `weight(i, j) = reward(i, j) - s_late`.
+- Batch2/rbatch2 recompute the optimal matching every `tau_s` seconds (default 30).
+  Batch2 dispatches all matched jobs at each tick, whereas rbatch2 only dispatches
+  jobs whose deadlines fall before the next evaluation (current time + `tau_s`).
 
 ## Parameter Sweep Examples
 

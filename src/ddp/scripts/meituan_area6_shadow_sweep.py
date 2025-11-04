@@ -85,6 +85,7 @@ def _write_summary_csv(rows: Iterable[Mapping[str, object]], path: Path) -> None
         "shadow",
         "gamma",
         "tau",
+        "tau_s",
         "resolution",
         "metric_mean",
         "metric_std",
@@ -101,7 +102,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--d", type=float, required=True, help="Time window parameter d (seconds)")
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"],
+        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         required=True,
         help="Dispatch policy to evaluate",
     )
@@ -138,6 +139,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--csv",
         default="results/meituan_area6_shadow_summary.csv",
         help="Path where the summary CSV will be written",
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     parser.add_argument(
         "--no-progress",
@@ -215,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ad_mapper=ad_mapper,
         trial_jobs=trial_jobs,
         trial_ad_duals=trial_ad_duals if include_ad else None,
+        tau_s=args.tau_s,
         progress=not args.no_progress,
     )
 
@@ -229,6 +237,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "shadow": record["shadow"],
                 "gamma": record["gamma"],
                 "tau": record["tau"],
+                "tau_s": args.tau_s,
                 "resolution": args.resolution,
                 "metric_mean": record["mean"],
                 "metric_std": record["std"],

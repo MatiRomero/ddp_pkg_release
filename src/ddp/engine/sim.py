@@ -13,12 +13,13 @@ def simulate(
     decision_rule="naive",         # 'naive' or 'threshold' (ignored for batch/rbatch)
     timestamps=None,               # array or None → 1,2,3,...
     time_window=None,              # scalar or array
-    policy="score",                # 'score' | 'batch' | 'rbatch'
+    policy="score",                # 'score' | 'batch' | 'rbatch' | 'batch2' | 'rbatch2'
     weight_fn=None,                # base weight for matching: reward - s_i - s_j
     shadow=None,                   # vector s_i (needed for critical adjustment)
     seed=0,
     tie_breaker: str = "distance",
     event_hook=None,               # optional callback(time, available, due_now, phase)
+    tau_s: float = 30.0,
 ):
     jobs = list(jobs)
     n = len(jobs)
@@ -48,7 +49,24 @@ def simulate(
             raise ValueError("time_window values must be non-negative")
 
     due_time = timestamps + tw
-    event_times = np.unique(np.concatenate([timestamps, due_time]))
+    periodic_policies = {"batch2", "rbatch2"}
+    if policy in periodic_policies:
+        if tau_s <= 0:
+            raise ValueError("tau_s must be positive for periodic policies")
+        if n:
+            min_ts = float(np.min(timestamps))
+            first_tick = max(float(tau_s), float(np.ceil(min_ts / tau_s) * tau_s))
+        else:
+            first_tick = float(tau_s)
+        max_due = float(np.max(due_time)) if n else float(tau_s)
+        tick_stop = max_due + float(tau_s)
+        tick_times = np.arange(first_tick, tick_stop + 0.5 * float(tau_s), float(tau_s))
+        tick_times = tick_times.astype(float)
+    else:
+        tick_times = np.array([], dtype=float)
+
+    event_times = np.unique(np.concatenate([timestamps, due_time, tick_times]))
+    tick_set = set(float(t) for t in tick_times)
     arrived = np.zeros(n, dtype=bool)
     available = set()
     paired = set()
@@ -70,7 +88,15 @@ def simulate(
             available_snapshot = tuple(sorted(available))
             due_snapshot = tuple(sorted(due_now))
             event_hook(float(t), available_snapshot, due_snapshot, "before")
-        if not due_now:
+        is_tick = policy in periodic_policies and float(t) in tick_set
+        if not due_now and not is_tick:
+            continue
+
+        if policy in periodic_policies and not is_tick:
+            if event_hook is not None:
+                available_snapshot = tuple(sorted(available))
+                due_snapshot = tuple(sorted(due_now))
+                event_hook(float(t), available_snapshot, due_snapshot, "after")
             continue
 
         # BATCH: solve matching on all available; critical adjustment; dispatch all
@@ -129,6 +155,72 @@ def simulate(
                 else:
                     solos.append(i)
                     available.discard(i)
+            if event_hook is not None:
+                available_snapshot = tuple(sorted(available))
+                due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
+                event_hook(float(t), available_snapshot, due_snapshot, "after")
+            continue
+
+        if policy == "batch2" and is_tick:
+            C = set(available)
+
+            def w_eff_periodic(i, j, th):
+                w = (weight_fn(i, j, th) if weight_fn is not None else reward_fn(i, j, th))
+                if shadow is not None:
+                    if i in C:
+                        w += float(shadow[i])
+                    if j in C:
+                        w += float(shadow[j])
+                return w
+
+            result = max_weight_matching_subset(list(available), jobs, reward_fn, weight_fn=w_eff_periodic, method="auto")
+            matched = set()
+            for (i, j, w_weight) in result["pairs"]:
+                r = float(reward_fn(i, j, jobs))
+                total_savings += r
+                pairs.append((i, j, float(w_weight), r))
+                matched.update([i, j])
+                paired.update([i, j])
+                available.discard(i)
+                available.discard(j)
+            for i in sorted(v for v in list(available)):
+                solos.append(i)
+                available.discard(i)
+            if event_hook is not None:
+                available_snapshot = tuple(sorted(available))
+                due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
+                event_hook(float(t), available_snapshot, due_snapshot, "after")
+            continue
+
+        if policy == "rbatch2" and is_tick:
+            horizon = float(t) + float(tau_s)
+            eligible = {i for i in available if due_time[i] <= horizon}
+            C = set(eligible)
+
+            def w_eff_periodic(i, j, th):
+                w = (weight_fn(i, j, th) if weight_fn is not None else reward_fn(i, j, th))
+                if shadow is not None:
+                    if i in C:
+                        w += float(shadow[i])
+                    if j in C:
+                        w += float(shadow[j])
+                return w
+
+            result = max_weight_matching_subset(list(available), jobs, reward_fn, weight_fn=w_eff_periodic, method="auto")
+            dispatched = set()
+            for (i, j, w_weight) in result["pairs"]:
+                if i not in eligible and j not in eligible:
+                    continue
+                r = float(reward_fn(i, j, jobs))
+                total_savings += r
+                pairs.append((i, j, float(w_weight), r))
+                dispatched.update([i, j])
+                paired.update([i, j])
+                available.discard(i)
+                available.discard(j)
+            for i in sorted(eligible - dispatched):
+                solos.append(i)
+                available.discard(i)
             if event_hook is not None:
                 available_snapshot = tuple(sorted(available))
                 due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))

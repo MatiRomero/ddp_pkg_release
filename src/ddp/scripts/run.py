@@ -27,6 +27,8 @@ _POLICY_DEFAULT_GAMMA: dict[str, float] = {
     "batch+": 1.0,
     "rbatch": 0.5,
     "rbatch+": 1.0,
+    "batch2": 0.5,
+    "rbatch2": 0.5,
 }
 
 
@@ -463,6 +465,7 @@ def _write_csv(rows, path: str) -> None:
         "tau",
         "gamma_plus",
         "tau_plus",
+        "tau_s",
         "pairs",
         "solos",
         "time_s",
@@ -489,7 +492,7 @@ def run_instance(
     jobs: Sequence[Job],
     d,
     shadows=("naive", "pb", "hd"),
-    dispatches=("greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+"),
+    dispatches=("greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"),
     seed=0,
     with_opt=False,
     opt_method="auto",
@@ -501,6 +504,7 @@ def run_instance(
     tau: float = 0.0,
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
+    tau_s: float = 30.0,
     tie_breaker: str = "distance",
     ad_duals: AverageDualTable
     | Mapping[object, float]
@@ -521,13 +525,15 @@ def run_instance(
     term raises the scaled shadow. The additive shift applies uniformly to all
     shadow families, including ``"naive"``. When ``gamma`` is omitted (``None``) a
     policy-specific default is used: ``1`` for ``greedy``/``greedy+``, ``0.5``
-    for ``batch``/``rbatch``, and ``1`` for the ``+`` variants. The ``+`` variants use the
+    for ``batch``/``rbatch`` and their periodic counterparts ``batch2``/``rbatch2``,
+    and ``1`` for the ``+`` variants. The ``+`` variants use the
     :func:`make_weight_fn_latest_shadow` helper, which subtracts only the later
     job's shadow ("late-arrival" adjustment). Their scaling defaults to
     ``gamma_plus = 1`` with optional ``tau_plus`` shifts, and the effective
     weight is ``reward(i, j) - (base * gamma_plus + tau_plus)``. ``tie_breaker``
     selects how greedy policies resolve score ties ("distance" by default, or
-    "random" using the provided seed).
+    "random" using the provided seed). Periodic dispatchers ``batch2`` and
+    ``rbatch2`` recompute the matching every ``tau_s`` seconds (default 30).
 
     When ``"ad"`` is present in ``shadows`` the optional ``ad_duals`` lookup must
     already contain the runtime shadows aligned with ``jobs``. Provide either a
@@ -679,6 +685,7 @@ def run_instance(
                 tau_value: float | None = None
                 gamma_plus_value: float | None = None
                 tau_plus_value: float | None = None
+                tau_s_value: float | None = None
                 if disp == "greedy":
                     gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
                     tau_eff = tau
@@ -740,6 +747,30 @@ def run_instance(
                         seed=seed,
                         tie_breaker=tie_breaker,
                     )
+                elif disp == "batch2":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    tau_s_eff = tau_s
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    w_fn = make_weight_fn(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
+                    tau_s_value = float(tau_s_eff)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="batch2",
+                        weight_fn=w_fn,
+                        shadow=sp,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                        tau_s=tau_s_eff,
+                    )
                 elif disp == "batch+":
                     gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
                     tau_plus_eff = tau_plus if tau_plus is not None else 0.0
@@ -781,6 +812,30 @@ def run_instance(
                         shadow=sp,
                         seed=seed,
                         tie_breaker=tie_breaker,
+                    )
+                elif disp == "rbatch2":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    tau_s_eff = tau_s
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    w_fn = make_weight_fn(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
+                    tau_s_value = float(tau_s_eff)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "policy",
+                        time_window=d,
+                        policy="rbatch2",
+                        weight_fn=w_fn,
+                        shadow=sp,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                        tau_s=tau_s_eff,
                     )
                 elif disp == "rbatch+":
                     gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
@@ -845,6 +900,7 @@ def run_instance(
                     "tau": tau_value,
                     "gamma_plus": gamma_plus_value,
                     "tau_plus": tau_plus_value,
+                    "tau_s": tau_s_value,
                 }
 
                 detail: dict[str, Any] | None = None
@@ -940,6 +996,7 @@ def run_instance(
             "tau": None,
             "gamma_plus": None,
             "tau_plus": None,
+            "tau_s": None,
         }
         rows.append(opt_row)
 
@@ -982,6 +1039,7 @@ def run_once(
     tau: float = 0.0,
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
+    tau_s: float = 30.0,
     tie_breaker: str = "distance",
     ad_duals: AverageDualTable
     | Mapping[object, float]
@@ -1000,7 +1058,8 @@ def run_once(
     shadow, producing ``reward(i, j) - s_late``. ``gamma_plus`` defaults to 1 (and
     can be overridden) while ``tau_plus`` still shifts the late-arrival shadows.
     ``tie_breaker`` mirrors the option in :func:`run_instance` for resolving greedy
-    score ties.
+    score ties. Periodic batch variants ``batch2``/``rbatch2`` evaluate the matching
+    every ``tau_s`` seconds (default 30).
     The ``ad_duals`` lookup, when provided with ``shadow='ad'``, must already
     contain one value per generated job just like :func:`run_instance`.
     """
@@ -1034,6 +1093,8 @@ def run_once(
         raise ValueError(f"Unknown shadow: {shadow}")
 
     t_run = time.perf_counter()
+    tau_s_value: float | None = None
+
     if dispatch == "greedy":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
         tau_eff = tau
@@ -1101,6 +1162,32 @@ def run_once(
             seed=seed,
             tie_breaker=tie_breaker,
         )
+    elif dispatch == "batch2":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        tau_s_eff = tau_s
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn, sp)
+        w_fn = make_weight_fn(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
+        tau_s_value = float(tau_s_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn,
+            "policy",
+            time_window=d,
+            policy="batch2",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+            tau_s=tau_s_eff,
+        )
     elif dispatch == "batch+":
         gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
@@ -1146,6 +1233,32 @@ def run_once(
             shadow=sp,
             seed=seed,
             tie_breaker=tie_breaker,
+        )
+    elif dispatch == "rbatch2":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        tau_s_eff = tau_s
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn, sp)
+        w_fn = make_weight_fn(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
+        tau_s_value = float(tau_s_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn,
+            "policy",
+            time_window=d,
+            policy="rbatch2",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+            tau_s=tau_s_eff,
         )
     elif dispatch == "rbatch+":
         gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
@@ -1201,6 +1314,7 @@ def run_once(
         "tau": tau_value,
         "gamma_plus": gamma_plus_value,
         "tau_plus": tau_plus_value,
+        "tau_s": tau_s_value,
     }
 
 
@@ -1236,11 +1350,12 @@ def main() -> None:
     p.add_argument("--shadows", default="naive,pb,hd")
     p.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,batch+,rbatch,rbatch+",
+        default="greedy,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
         help=(
             "Comma-separated dispatch policies. "
             "The '+ variants apply late-arrival shadow weighting with weights "
             "reward(i, j) - s_late (subtracting only the later job's shadow)."
+            "Periodic variants batch2/rbatch2 solve the matching every tau_s seconds."
         ),
     )
     p.add_argument(
@@ -1259,7 +1374,7 @@ def main() -> None:
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
             "When omitted, uses policy-specific defaults (1 for greedy/greedy+, "
-            "0.5 for batch/rbatch, 1 for batch+/rbatch+)."
+            "0.5 for batch/rbatch/batch2/rbatch2, 1 for batch+/rbatch+)."
         ),
     )
     p.add_argument(
@@ -1269,6 +1384,12 @@ def main() -> None:
         help=(
             "Additive offset subtracted from the scaled shadow potentials before dispatch."
         ),
+    )
+    p.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
     p.add_argument(
         "--plus_gamma",
@@ -1473,6 +1594,7 @@ def main() -> None:
         tau=args.tau,
         gamma_plus=args.plus_gamma,
         tau_plus=args.plus_tau,
+        tau_s=args.tau_s,
         tie_breaker=args.tie_breaker,
         ad_duals=ad_table,
         ad_mapper=ad_mapper,

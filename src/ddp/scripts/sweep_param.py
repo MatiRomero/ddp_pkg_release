@@ -33,6 +33,11 @@ CSV_FIELD_ORDER = [
     "d_fixed",
     "shadow",
     "dispatch",
+    "gamma",
+    "tau",
+    "gamma_plus",
+    "tau_plus",
+    "tau_s",
     "n",
     "d",
     "savings",
@@ -143,6 +148,7 @@ def _run_trials_for_config(
             print_table=False,
             return_details=False,
             print_matches=False,
+            tau_s=args.tau_s,
             ad_duals=ad_duals,
             ad_mapper=ad_mapper,
         )
@@ -188,10 +194,11 @@ def main() -> None:
     parser.add_argument("--shadows", default="naive,pb,hd", help="Comma-separated shadow list")
     parser.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,batch+,rbatch,rbatch+",
+        default="greedy,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
         help=(
             "Comma-separated dispatch policies. Include 'batch+'/'rbatch+' to evaluate "
             "the late-arrival shadow variants."
+            "Periodic batch2/rbatch2 evaluate matchings every tau_s seconds."
         ),
     )
     parser.add_argument("--outdir", default="results", help="Directory for CSV output")
@@ -235,6 +242,12 @@ def main() -> None:
         help=(
             "Module:function resolving to an average-dual mapper for type-indexed tables."
         ),
+    )
+    parser.add_argument(
+        "--tau_s",
+        type=float,
+        default=30.0,
+        help="Period (seconds) between matching evaluations for batch2/rbatch2.",
     )
 
     args = parser.parse_args()
@@ -339,6 +352,7 @@ def main() -> None:
                     "param_value": float(value),
                     "n_fixed": args.n if args.param == "d" else None,
                     "d_fixed": args.d if args.param == "n" else None,
+                    "tau_s": args.tau_s,
                 }
                 for row in _run_trials_for_config(
                     n=current_n,
@@ -358,6 +372,7 @@ def main() -> None:
                 "param_value": None,
                 "n_fixed": args.n,
                 "d_fixed": args.d,
+                "tau_s": args.tau_s,
             }
             for row in _run_trials_for_config(
                 n=args.n,

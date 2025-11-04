@@ -18,6 +18,7 @@ GROUP_FIELDS: list[str] = [
     "tau",
     "gamma_plus",
     "tau_plus",
+    "tau_s",
     "n",
     "d",
 ]
@@ -100,6 +101,7 @@ def aggregate(path: str) -> pd.DataFrame:
         "tau",
         "gamma_plus",
         "tau_plus",
+        "tau_s",
     ]
     for col in numeric_candidates:
         if col in df.columns:
@@ -156,6 +158,7 @@ def _print_summary_table(df: pd.DataFrame, *, limit: int = 10) -> None:
             "tau",
             "gamma_plus",
             "tau_plus",
+            "tau_s",
             "n",
             "d",
             "trial_count",
