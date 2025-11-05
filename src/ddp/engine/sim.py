@@ -20,6 +20,7 @@ def simulate(
     tie_breaker: str = "distance",
     event_hook=None,               # optional callback(time, available, due_now, phase)
     tau_s: float = 30.0,
+    dispatch_hook=None,            # optional callback(time, dispatched_indices)
 ):
     jobs = list(jobs)
     n = len(jobs)
@@ -74,6 +75,18 @@ def simulate(
     pairs = []  # (i, j, score_or_weight, reward)
     solos = []
     rng = np.random.default_rng(seed)
+    dispatch_times: dict[int, float] = {}
+
+    def _mark_dispatched(indices: Sequence[int], when: float) -> None:
+        if not indices:
+            return
+        ts = float(when)
+        for idx in indices:
+            int_idx = int(idx)
+            if int_idx not in dispatch_times:
+                dispatch_times[int_idx] = ts
+        if dispatch_hook is not None:
+            dispatch_hook(ts, tuple(int(idx) for idx in indices))
 
     for t in event_times:
         # arrivals
@@ -116,8 +129,10 @@ def simulate(
                 total_savings += r
                 pairs.append((i, j, float(w_weight), r))
                 matched.add(i); matched.add(j)
+                _mark_dispatched((i, j), t)
             for i in sorted(v for v in available if v not in matched):
                 solos.append(i)
+                _mark_dispatched((i,), t)
             available.clear()
             if event_hook is not None:
                 available_snapshot = tuple(sorted(available))
@@ -152,9 +167,11 @@ def simulate(
                     pairs.append((i, partner, float(w_ij), r))
                     available.discard(i); available.discard(partner)
                     paired.update([i, partner])
+                    _mark_dispatched((i, partner), t)
                 else:
                     solos.append(i)
                     available.discard(i)
+                    _mark_dispatched((i,), t)
             if event_hook is not None:
                 available_snapshot = tuple(sorted(available))
                 due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
@@ -183,9 +200,11 @@ def simulate(
                 paired.update([i, j])
                 available.discard(i)
                 available.discard(j)
+                _mark_dispatched((i, j), t)
             for i in sorted(v for v in list(available)):
                 solos.append(i)
                 available.discard(i)
+                _mark_dispatched((i,), t)
             if event_hook is not None:
                 available_snapshot = tuple(sorted(available))
                 due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
@@ -218,9 +237,11 @@ def simulate(
                 paired.update([i, j])
                 available.discard(i)
                 available.discard(j)
+                _mark_dispatched((i, j), t)
             for i in sorted(eligible - dispatched):
                 solos.append(i)
                 available.discard(i)
+                _mark_dispatched((i,), t)
             if event_hook is not None:
                 available_snapshot = tuple(sorted(available))
                 due_snapshot = tuple(sorted(i for i in available if due_time[i] <= t))
@@ -267,9 +288,11 @@ def simulate(
                 pairs.append((i, j, score, reward))
                 available.discard(i); available.discard(j)
                 paired.update([i, j])
+                _mark_dispatched((i, j), t)
             else:
                 solos.append(i)
                 available.discard(i)
+                _mark_dispatched((i,), t)
 
         if event_hook is not None:
             available_snapshot = tuple(sorted(available))
@@ -280,6 +303,8 @@ def simulate(
     for i in sorted(list(available)):
         if i not in paired:
             solos.append(i)
+            dispatch_time = float(due_time[i]) if np.isfinite(due_time[i]) else float(event_times[-1])
+            _mark_dispatched((i,), dispatch_time)
 
     return {
         "n": n,
@@ -288,4 +313,5 @@ def simulate(
         "solos": solos,
         "total_savings": float(total_savings),
         "pooled_pct": 100.0 * (2 * len(pairs)) / n if n else 0.0,
+        "dispatch_times": dispatch_times,
     }
