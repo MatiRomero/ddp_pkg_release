@@ -272,7 +272,7 @@ _METRIC_LABELS: dict[str, str] = {
     "pooled_pct": "match rate",
     "ratio_lp": "LP Ratio",
     "ratio_opt": "Ratio",
-    "time-s": "Running Time (s)",
+    "time_s": "Running Time (s)",
     "regret": "Regret",
 }
 
@@ -303,6 +303,7 @@ _DISPATCH_STYLES: dict[str, _DispatchStyle] = {
     "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
     "batch": _DispatchStyle(linestyle=":", color_factor=0.55, marker_scale=1.55),
     "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
+    "rbatch2": _DispatchStyle(linestyle="--", color_factor=0.2, marker_scale=1.7),
     "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
 }
 
@@ -835,7 +836,7 @@ def _plot_metric_sweep(
             )
         drew_any = True
 
-        if metric_base == "time-s":
+        if metric_base == "time_s":
             log_candidates_x.append(xs)
             log_candidates_y.append(ys)
 
@@ -855,7 +856,7 @@ def _plot_metric_sweep(
     if "ratio" in metric_base.lower():
         ax.set_ylim(top=1.0)
 
-    if metric_base == "time-s" and log_candidates_x and log_candidates_y:
+    if metric_base == "time_s" and log_candidates_x and log_candidates_y:
         all_x = np.concatenate(log_candidates_x)
         all_y = np.concatenate(log_candidates_y)
         if np.all(all_x > 0) and np.all(all_y > 0):

@@ -18,8 +18,8 @@ from typing import Iterable, Mapping, Sequence
 # Core sweep dimensions -----------------------------------------------------
 
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
-_DEADLINES: Sequence[int] = [90]
-_SHADOWS: Sequence[str] = ["hd"]
+_DEADLINES: Sequence[int] = [30,60,90,120,150,180]
+_SHADOWS: Sequence[str] = ["pb","hd","ad"]
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -29,8 +29,8 @@ _SHADOWS: Sequence[str] = ["hd"]
 # will create an empty column so that the default provided by the run module
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
-    "dispatch": ["rbatch"],
-    "gamma": ["0.8"],
+    "dispatch": ["rbatch2"],
+    "gamma": ["0.1","1.0"],
     "tau": [""],
     "plus_gamma": [""],
     "plus_tau": [""],
@@ -45,7 +45,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
     # "ad_duals": [""],
     "ad_resolution": ["8"],
-    "ad_resolutions": [""],
+    # "ad_resolutions": [""],
     "ad_mapping": [""],
     "save_job_csv": [""],
 }
