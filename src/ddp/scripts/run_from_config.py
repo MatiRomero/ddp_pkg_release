@@ -34,6 +34,7 @@ _COLUMN_TO_FLAG: dict[str, str] = {
     "jobs_csv": "--jobs-csv",
     "jobs": "--jobs",
     "save_csv": "--save_csv",
+    "save_job_csv": "--save_job_csv",
     "d": "--d",
     "shadow": "--shadows",
     "shadows": "--shadows",
@@ -123,6 +124,8 @@ def main() -> None:
     if not save_csv:
         raise SystemExit("Config row missing required 'save_csv' entry")
 
+    job_detail_csv = resolve_repo_path(_normalise(row.get("save_job_csv")))
+
     d_value = _normalise(row.get("d"))
     if not d_value:
         raise SystemExit("Config row missing required 'd' entry")
@@ -130,6 +133,8 @@ def main() -> None:
     shadow_value = _normalise(row.get("shadows")) or _normalise(row.get("shadow")) or "hd"
 
     pathlib.Path(save_csv).parent.mkdir(parents=True, exist_ok=True)
+    if job_detail_csv:
+        pathlib.Path(job_detail_csv).parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         sys.executable,
@@ -146,8 +151,11 @@ def main() -> None:
         shadow_value,
     ]
 
+    if job_detail_csv:
+        cmd.extend(["--save_job_csv", job_detail_csv])
+
     for column, value in row.items():
-        if column in {"jobs_csv", "jobs", "save_csv", "d", "shadow", "shadows"}:
+        if column in {"jobs_csv", "jobs", "save_csv", "save_job_csv", "d", "shadow", "shadows"}:
             continue
         flag = _COLUMN_TO_FLAG.get(column)
         if not flag:

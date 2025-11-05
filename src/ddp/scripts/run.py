@@ -477,6 +477,88 @@ def _write_csv(rows, path: str) -> None:
         writer.writerows(rows)
 
 
+def _build_job_rows(
+    *,
+    jobs: Sequence[Job],
+    result: dict[str, Any],
+    shadow: str,
+    dispatch: str,
+    resolution: str | None,
+) -> list[dict[str, object]]:
+    dispatch_times = result.get("dispatch_times")
+    if not dispatch_times:
+        return []
+
+    partner_map: dict[int, int] = {}
+    for i, j, *_ in result.get("pairs", []):
+        partner_map[int(i)] = int(j)
+        partner_map[int(j)] = int(i)
+
+    solos = {int(idx) for idx in result.get("solos", [])}
+
+    rows: list[dict[str, object]] = []
+    for idx, job in enumerate(jobs):
+        if idx not in dispatch_times:
+            continue
+        dispatch_time = float(dispatch_times[idx])
+        arrival = float(job.timestamp)
+        delay = dispatch_time - arrival
+        status = "solo" if idx in solos else "paired" if idx in partner_map else "pending"
+        partner = partner_map.get(idx)
+
+        origin_lat, origin_lng = job.origin
+        dest_lat, dest_lng = job.dest
+
+        rows.append(
+            {
+                "shadow": shadow,
+                "dispatch": dispatch,
+                "ad_resolution": resolution if shadow == "ad" else None,
+                "job_index": idx,
+                "partner_index": partner,
+                "origin_lat": float(origin_lat),
+                "origin_lng": float(origin_lng),
+                "dest_lat": float(dest_lat),
+                "dest_lng": float(dest_lng),
+                "arrival_time": arrival,
+                "dispatch_time": dispatch_time,
+                "delay": delay,
+                "status": status,
+            }
+        )
+
+    return rows
+
+
+def _write_job_csv(rows: Sequence[dict[str, object]], path: str) -> None:
+    if not path or not rows:
+        return
+
+    fields = [
+        "shadow",
+        "dispatch",
+        "ad_resolution",
+        "job_index",
+        "partner_index",
+        "origin_lat",
+        "origin_lng",
+        "dest_lat",
+        "dest_lng",
+        "arrival_time",
+        "dispatch_time",
+        "delay",
+        "status",
+    ]
+
+    dst = Path(path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    with dst.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 @dataclass
 class _DispatchCandidate:
     """Container for the metrics produced by a dispatch policy."""
@@ -486,6 +568,7 @@ class _DispatchCandidate:
     run_time: float
     detail: dict[str, Any] | None
     resolution: str | None
+    job_rows: list[dict[str, object]] | None = None
 
 
 def run_instance(
@@ -497,6 +580,7 @@ def run_instance(
     with_opt=False,
     opt_method="auto",
     save_csv="",
+    save_job_csv: str = "",
     print_table=True,
     return_details=False,
     print_matches=False,
@@ -637,6 +721,8 @@ def run_instance(
 
     rows: list[dict[str, Any]] = []
     details: dict[Any, dict[str, Any]] = {}
+    job_rows_output: list[dict[str, object]] = []
+    job_csv_policies = {"rbatch", "rbatch2"}
 
     for sh in shadows:
         variant_entries: list[tuple[str | None, np.ndarray]] = []
@@ -908,12 +994,23 @@ def run_instance(
                     pairs_idx = [(i, j) for (i, j, *_rest) in res["pairs"]]
                     detail = {"pairs": pairs_idx, "solos": list(res["solos"])}
 
+                job_rows: list[dict[str, object]] | None = None
+                if save_job_csv and disp in job_csv_policies:
+                    job_rows = _build_job_rows(
+                        jobs=jobs,
+                        result=res,
+                        shadow=sh,
+                        dispatch=disp,
+                        resolution=resolution_label,
+                    )
+
                 dispatch_candidates[disp] = _DispatchCandidate(
                     dispatch=disp,
                     row=row,
                     run_time=run_time,
                     detail=detail,
                     resolution=resolution_label,
+                    job_rows=job_rows,
                 )
 
             if dispatch_candidates:
@@ -947,6 +1044,9 @@ def run_instance(
                 best_candidate.row["ad_resolution"] = None
             rows.append(best_candidate.row)
             _print_result(sh, best_resolution if sh == "ad" else None, best_candidate)
+
+            if save_job_csv and best_candidate.job_rows:
+                job_rows_output.extend(best_candidate.job_rows)
 
             if return_details or print_matches:
                 detail = best_candidate.detail
@@ -1009,6 +1109,8 @@ def run_instance(
                 )
 
     _write_csv(rows, save_csv)
+    if save_job_csv:
+        _write_job_csv(job_rows_output, save_job_csv)
 
     out = {
         "rows": rows,
@@ -1365,6 +1467,11 @@ def main() -> None:
     )
     p.add_argument("--opt_method", default="auto", choices=["auto", "networkx", "ilp"])
     p.add_argument("--save_csv", default="")
+    p.add_argument(
+        "--save_job_csv",
+        default="",
+        help="Optional path to write per-job dispatch metrics for selected policies.",
+    )
     p.add_argument("--print_matches", action="store_true")
     p.add_argument("--return_details", action="store_true")
     p.add_argument(
@@ -1587,6 +1694,7 @@ def main() -> None:
         with_opt=args.with_opt,
         opt_method=args.opt_method,
         save_csv=args.save_csv,
+        save_job_csv=args.save_job_csv,
         print_table=True,
         return_details=args.return_details,
         print_matches=args.print_matches,
