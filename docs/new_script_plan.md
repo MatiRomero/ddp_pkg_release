@@ -26,8 +26,9 @@ results back into a single aggregated report.
 ## 2. Config CSV emission (`generate_config` parity)
 
 * Reuse the base column layout from `src/ddp/scripts/generate_config.py`
-  (`day`, `d`, `shadow`, `jobs_csv`, `save_csv`) so the table remains compatible
-  with `run_from_config`.
+  (`day`, `d`, `shadow`, `jobs_csv`, `save_csv`, `save_job_csv`) so the table
+  remains compatible with `run_from_config` and continues to expose the default
+  job-level CSV destination.
 * Extend the schema with `gamma` and `tau` columns to cover
   `meituan_shadow_sweep` inputs. Emit one row for every `(day, d, gamma, tau)`
   combination so the downstream run has everything it needs to pick the correct
