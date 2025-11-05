@@ -47,6 +47,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "ad_resolution": ["8"],
     "ad_resolutions": [""],
     "ad_mapping": [""],
+    "save_job_csv": [""],
 }
 
 
@@ -100,6 +101,13 @@ def _optional_sweep_items() -> Sequence[tuple[str, Sequence[str]]]:
     return items
 
 
+def _default_job_csv_path(results_dir: Path, save_name: str) -> Path:
+    """Return the default job-level CSV destination for a config row."""
+
+    save_stem = Path(save_name).stem
+    return results_dir / f"{save_stem}_jobs.csv"
+
+
 def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
     """Yield each configuration row as a mapping."""
 
@@ -132,6 +140,8 @@ def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
             save_name = "_".join(name_parts) + ".csv"
             save_csv = results_dir / save_name
 
+            default_job_csv = _default_job_csv_path(results_dir, save_name)
+
             row: dict[str, str] = {
                 "day": str(day),
                 "d": str(deadline),
@@ -140,6 +150,8 @@ def _iter_rows(results_dir: Path) -> Iterable[dict[str, str]]:
                 "save_csv": str(save_csv),
             }
             row.update(optional_payload)
+            if not row.get("save_job_csv"):
+                row["save_job_csv"] = str(default_job_csv)
             yield row
 
 
@@ -156,7 +168,15 @@ def main() -> None:
     config_path = configs_dir / f"config_{name}.csv"
 
     optional_columns = [column for column, _ in _optional_sweep_items()]
-    headers = ["day", "d", "shadow", "jobs_csv", "save_csv", *optional_columns]
+    headers = [
+        "day",
+        "d",
+        "shadow",
+        "jobs_csv",
+        "save_csv",
+        "save_job_csv",
+        *[column for column in optional_columns if column != "save_job_csv"],
+    ]
 
     rows = list(_iter_rows(results_dir))
 
