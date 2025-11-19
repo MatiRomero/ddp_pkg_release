@@ -301,9 +301,9 @@ class _DispatchStyle:
 
 _DISPATCH_STYLES: dict[str, _DispatchStyle] = {
     "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
-    "batch": _DispatchStyle(linestyle=":", color_factor=0.55, marker_scale=1.55),
+    "batch": _DispatchStyle(linestyle=":", color_factor=0.2, marker_scale=0),
     "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
-    "rbatch2": _DispatchStyle(linestyle="--", color_factor=0.2, marker_scale=1.7),
+    "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.55, marker_scale=1.7),
     "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
 }
 
@@ -331,7 +331,7 @@ _SHADOW_MARKERS: dict[str, str] = {
 _BASE_MARKERSIZE = 6.5
 
 
-_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "batch", "rbatch", "opt")
+_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "batch", "rbatch", "rbatch2", "opt")
 
 
 _SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt")
@@ -585,6 +585,7 @@ def _plot_metric_grid(
         stds = std_pivot.reindex(index=shadows, columns=dispatches).to_numpy(dtype=float)
 
     fig_w = 1.6 * max(3, len(dispatches)) + 1.5
+    # fig_w = 1.6 * max(3, len(dispatches)) + 2.5
     fig_h = 1.2 * max(3, len(shadows)) + 1.2
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
 
@@ -738,6 +739,7 @@ def _plot_metric_sweep(
         by_policy[policy].append(row)
 
     fig, ax = plt.subplots(figsize=(6, 5))
+    # fig, ax = plt.subplots(figsize=(10, 5))
 
     policies = sorted(by_policy.keys(), key=_policy_sort_key)
     color_map = _build_style_mappings(policies)
@@ -854,7 +856,8 @@ def _plot_metric_sweep(
     ax.set_ylabel(y_label)
 
     if "ratio" in metric_base.lower():
-        ax.set_ylim(top=1.0)
+        # ax.set_ylim(top=1.0)
+        ax.set_ylim(0.74,1.0)
 
     if metric_base == "time_s" and log_candidates_x and log_candidates_y:
         all_x = np.concatenate(log_candidates_x)
@@ -875,6 +878,15 @@ def _plot_metric_sweep(
             frameon=False,
             ncol=ncol,
         )
+        # ncol = 1
+        # ax.legend(
+        #     loc="upper right",
+        #     bbox_to_anchor=(1.7, 1),
+        #     borderaxespad=0,
+        #     fontsize=9,
+        #     frameon=False,
+        #     ncol=ncol,
+        # )
 
     fig.tight_layout(pad=0.8)
 

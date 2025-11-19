@@ -19,7 +19,7 @@ from typing import Iterable, Mapping, Sequence
 
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
 _DEADLINES: Sequence[int] = [30,60,90,120,150,180]
-_SHADOWS: Sequence[str] = ["pb","hd","ad"]
+_SHADOWS: Sequence[str] = ["naive","pb","hd","ad"]
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -30,7 +30,7 @@ _SHADOWS: Sequence[str] = ["pb","hd","ad"]
 # is used.
 _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "dispatch": ["rbatch2"],
-    "gamma": ["0.1","1.0"],
+    "gamma": ["0","0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"],
     "tau": [""],
     "plus_gamma": [""],
     "plus_tau": [""],
