@@ -57,6 +57,9 @@ PYTHONPATH=src python -m ddp.scripts.generate_ad_config
 qsub -t 1-12:1 -- python -m ddp.scripts.run_ad_from_config --config configs/ad_config.csv
 # Inspect the resolved command locally without running the pipeline
 PYTHONPATH=src python -m ddp.scripts.run_ad_from_config --dry-run
+# Generate a synthetic batch config and fan it out via qsub
+python scripts/generate_synth_config.py --seeds 0,1,2,3,4 --d-values 30,60,90
+qsub -t 1-60:1 -- python -m ddp.scripts.run_from_config --config configs/config_synth_*.csv
 ```
 
 Average-dual (``ad``) shadows require a *pre-enriched* lookup aligned with the
