@@ -455,7 +455,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
+        choices=["greedy", "greedyx", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         default="greedy",
         help=(
             "Dispatch policy to evaluate. '+ variants apply late-arrival shadow "

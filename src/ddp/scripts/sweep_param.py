@@ -194,7 +194,7 @@ def main() -> None:
     parser.add_argument("--shadows", default="naive,pb,hd", help="Comma-separated shadow list")
     parser.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
+        default="greedy,greedyx,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
         help=(
             "Comma-separated dispatch policies. Include 'batch+'/'rbatch+' to evaluate "
             "the late-arrival shadow variants."

@@ -102,7 +102,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--d", type=float, required=True, help="Time window parameter d (seconds)")
     parser.add_argument(
         "--dispatch",
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
+        choices=["greedy", "greedyx", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         required=True,
         help="Dispatch policy to evaluate",
     )

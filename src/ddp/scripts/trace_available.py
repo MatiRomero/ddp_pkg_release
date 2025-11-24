@@ -117,6 +117,8 @@ def _prepare_dispatch(
 
     if policy == "greedy":
         return "naive", "score", score_fn, None, None, None
+    if policy == "greedyx":
+        return "prescreen", "score", score_fn, None, None, None
     if policy == "greedy+":
         return "threshold", "score", score_fn, None, None, None
     if policy == "batch":
@@ -145,7 +147,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--policy",
         required=True,
-        choices=["greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
+        choices=["greedy", "greedyx", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"],
         help=(
             "Dispatch policy to trace. The '+ variants use late-arrival shadow "
             "weighting with reward(i, j) - s_late (subtracting only the later "
@@ -164,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
-            "When omitted, uses the policy default (1 for greedy/greedy+, 0.5 for batch/rbatch/batch2/rbatch2, 1 for the '+ variants)."
+            "When omitted, uses the policy default (1 for greedy/greedyx/greedy+, 0.5 for batch/rbatch/batch2/rbatch2, 1 for the '+ variants)."
         ),
     )
     parser.add_argument(

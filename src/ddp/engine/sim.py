@@ -10,7 +10,7 @@ def simulate(
     jobs: Sequence[Job],
     score_fn,           # local score(i,j,theta) = reward - s_j
     reward_fn,          # reward(i,j,theta)
-    decision_rule="naive",         # 'naive' or 'threshold' (ignored for batch/rbatch)
+    decision_rule="naive",         # 'naive', 'prescreen', or 'threshold' (ignored for batch/rbatch)
     timestamps=None,               # array or None → 1,2,3,...
     time_window=None,              # scalar or array
     policy="score",                # 'score' | 'batch' | 'rbatch' | 'batch2' | 'rbatch2'
@@ -253,35 +253,52 @@ def simulate(
             if i not in available:
                 continue
             candidates = [j for j in available if j != i]
+            reward_cache: dict[int, float] = {}
             if candidates:
-                score_map = {cand: float(score_fn(i, cand, jobs)) for cand in candidates}
-                best_score = max(score_map.values())
-                best_candidates = [
-                    cand for cand, val in score_map.items() if np.isclose(val, best_score)
-                ]
-                if len(best_candidates) == 1:
-                    j = best_candidates[0]
-                elif tie_breaker == "random":
-                    j = int(rng.choice(best_candidates))
-                else:  # tie_breaker == "distance"
-                    job_i = jobs[i]
+                if decision_rule == "prescreen":
+                    score_map = {}
+                    for cand in candidates:
+                        reward_cache[cand] = float(reward_fn(i, cand, jobs))
+                        if reward_cache[cand] > 0.0:
+                            score_map[cand] = float(score_fn(i, cand, jobs))
+                else:
+                    score_map = {cand: float(score_fn(i, cand, jobs)) for cand in candidates}
 
-                    def _distance_metric(cand: int) -> tuple[float, int]:
-                        job_j = jobs[cand]
-                        dist = distance(job_i.origin, job_j.origin) + distance(
-                            job_i.dest, job_j.dest
-                        )
-                        return dist, cand
+                if score_map:
+                    best_score = max(score_map.values())
+                    best_candidates = [
+                        cand for cand, val in score_map.items() if np.isclose(val, best_score)
+                    ]
+                    if len(best_candidates) == 1:
+                        j = best_candidates[0]
+                    elif tie_breaker == "random":
+                        j = int(rng.choice(best_candidates))
+                    else:  # tie_breaker == "distance"
+                        job_i = jobs[i]
 
-                    j = min(best_candidates, key=_distance_metric)
-                score = score_map[j]
-                reward = float(reward_fn(i, j, jobs))
+                        def _distance_metric(cand: int) -> tuple[float, int]:
+                            job_j = jobs[cand]
+                            dist = distance(job_i.origin, job_j.origin) + distance(
+                                job_i.dest, job_j.dest
+                            )
+                            return dist, cand
+
+                        j = min(best_candidates, key=_distance_metric)
+                    score = score_map[j]
+                    reward = reward_cache.get(j, float(reward_fn(i, j, jobs)))
+                else:
+                    j, score, reward = None, -1.0, 0.0
             else:
                 j, score, reward = None, -1.0, 0.0
 
             do_match = False
             if j is not None:
-                do_match = (score > 0.0) if decision_rule == "threshold" else (reward > 0.0)
+                if decision_rule == "threshold":
+                    do_match = score > 0.0
+                elif decision_rule == "prescreen":
+                    do_match = True
+                else:
+                    do_match = reward > 0.0
 
             if do_match and j is not None:
                 total_savings += reward
