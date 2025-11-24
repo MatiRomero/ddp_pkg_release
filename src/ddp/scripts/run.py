@@ -22,6 +22,7 @@ from ddp.scripts.csv_loader import load_jobs_from_csv
 
 _POLICY_DEFAULT_GAMMA: dict[str, float] = {
     "greedy": 1.0,
+    "greedyx": 1.0,
     "greedy+": 1.0,
     "batch": 0.5,
     "batch+": 1.0,
@@ -575,7 +576,7 @@ def run_instance(
     jobs: Sequence[Job],
     d,
     shadows=("naive", "pb", "hd"),
-    dispatches=("greedy", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"),
+    dispatches=("greedy", "greedyx", "greedy+", "batch", "batch+", "rbatch", "rbatch+", "batch2", "rbatch2"),
     seed=0,
     with_opt=False,
     opt_method="auto",
@@ -608,7 +609,7 @@ def run_instance(
     effective vector is computed as ``sp = base * gamma + tau`` so the additive
     term raises the scaled shadow. The additive shift applies uniformly to all
     shadow families, including ``"naive"``. When ``gamma`` is omitted (``None``) a
-    policy-specific default is used: ``1`` for ``greedy``/``greedy+``, ``0.5``
+    policy-specific default is used: ``1`` for ``greedy``/``greedyx``/``greedy+``, ``0.5``
     for ``batch``/``rbatch`` and their periodic counterparts ``batch2``/``rbatch2``,
     and ``1`` for the ``+`` variants. The ``+`` variants use the
     :func:`make_weight_fn_latest_shadow` helper, which subtracts only the later
@@ -785,6 +786,26 @@ def run_instance(
                         score_fn,
                         reward_fn,
                         "naive",
+                        time_window=d,
+                        policy="score",
+                        weight_fn=None,
+                        shadow=None,
+                        seed=seed,
+                        tie_breaker=tie_breaker,
+                    )
+                elif disp == "greedyx":
+                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
+                    tau_eff = tau
+                    sp = np.array(sp_base, dtype=float, copy=True)
+                    sp = sp * gamma_eff + tau_eff
+                    score_fn = make_local_score(reward_fn, sp)
+                    gamma_value = float(gamma_eff)
+                    tau_value = float(tau_eff)
+                    res = simulate(
+                        jobs,
+                        score_fn,
+                        reward_fn,
+                        "prescreen",
                         time_window=d,
                         policy="score",
                         weight_fn=None,
@@ -1219,6 +1240,28 @@ def run_once(
             seed=seed,
             tie_breaker=tie_breaker,
         )
+    elif dispatch == "greedyx":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        gamma_plus_value = None
+        tau_plus_value = None
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn,
+            "prescreen",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
     elif dispatch == "greedy+":
         gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
         tau_eff = tau
@@ -1452,7 +1495,7 @@ def main() -> None:
     p.add_argument("--shadows", default="naive,pb,hd")
     p.add_argument(
         "--dispatch",
-        default="greedy,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
+        default="greedy,greedyx,greedy+,batch,batch+,rbatch,rbatch+,batch2,rbatch2",
         help=(
             "Comma-separated dispatch policies. "
             "The '+ variants apply late-arrival shadow weighting with weights "
@@ -1480,7 +1523,7 @@ def main() -> None:
         default=None,
         help=(
             "Scale factor applied to the shadow potentials before dispatch. "
-            "When omitted, uses policy-specific defaults (1 for greedy/greedy+, "
+            "When omitted, uses policy-specific defaults (1 for greedy/greedyx/greedy+, "
             "0.5 for batch/rbatch/batch2/rbatch2, 1 for batch+/rbatch+)."
         ),
     )

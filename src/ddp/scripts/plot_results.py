@@ -301,6 +301,7 @@ class _DispatchStyle:
 
 _DISPATCH_STYLES: dict[str, _DispatchStyle] = {
     "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    "greedyx": _DispatchStyle(linestyle="-", color_factor=0.8, marker_scale=1.0),
     "batch": _DispatchStyle(linestyle=":", color_factor=0.2, marker_scale=0),
     "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
     "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.55, marker_scale=1.7),
@@ -331,7 +332,7 @@ _SHADOW_MARKERS: dict[str, str] = {
 _BASE_MARKERSIZE = 6.5
 
 
-_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "batch", "rbatch", "rbatch2", "opt")
+_DISPATCH_ORDER: tuple[str, ...] = ("greedy", "greedyx", "batch", "rbatch", "rbatch2", "opt")
 
 
 _SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt")
@@ -350,6 +351,7 @@ _POLICY_DISPATCH_LABELS: dict[str, str] = {
     "batch": "BAT",
     "rbatch": "RBAT",
     "greedy": "GRE",
+    "greedyx": "GREX",
     "opt": "OPT",
 }
 
