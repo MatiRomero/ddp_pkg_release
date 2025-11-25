@@ -350,6 +350,7 @@ _POLICY_SHADOW_LABELS: dict[str, str] = {
 _POLICY_DISPATCH_LABELS: dict[str, str] = {
     "batch": "BAT",
     "rbatch": "RBAT",
+    "rbatch2": "RBAT2",
     "greedy": "GRE",
     "greedyx": "GREX",
     "opt": "OPT",
@@ -493,7 +494,7 @@ def _format_policy_label(policy: str) -> str:
     dispatch_label = _format_dispatch(dispatch)
 
     if shadow_label and dispatch_label:
-        return f"{shadow_label} + {dispatch_label}"
+        return f"{shadow_label}—{dispatch_label}"
     return shadow_label or dispatch_label or policy
 
 
@@ -740,7 +741,7 @@ def _plot_metric_sweep(
             continue
         by_policy[policy].append(row)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(5, 4))
     # fig, ax = plt.subplots(figsize=(10, 5))
 
     policies = sorted(by_policy.keys(), key=_policy_sort_key)
@@ -858,8 +859,8 @@ def _plot_metric_sweep(
     ax.set_ylabel(y_label)
 
     if "ratio" in metric_base.lower():
-        # ax.set_ylim(top=1.0)
-        ax.set_ylim(0.74,1.0)
+        ax.set_ylim(top=1.0)
+        # ax.set_ylim(0.74,1.0)
 
     if metric_base == "time_s" and log_candidates_x and log_candidates_y:
         all_x = np.concatenate(log_candidates_x)
@@ -876,7 +877,7 @@ def _plot_metric_sweep(
             loc="lower center",
             bbox_to_anchor=(0.5, 1.02),
             borderaxespad=0,
-            fontsize=9,
+            fontsize=8,
             frameon=False,
             ncol=ncol,
         )
@@ -894,7 +895,7 @@ def _plot_metric_sweep(
 
     out_path = _compute_out_path(csv_hint, metric, out_arg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    fig.savefig(out_path, dpi=600, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
