@@ -285,10 +285,12 @@ _PARAM_LABELS: dict[str, str] = {
 _SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
     # Keep policy colours stable across plots for recognisable comparisons.
     "opt": ("#111111",),
-    "naive": ("#f59e0b",),
-    "pb": ("#2563eb",),
-    "hd": ("#16a34a",),
-    "ad": ("#d946ef",),
+    # "naive": ("#f59e0b",),
+    "naive": ("C1",),
+    # "pb": ("#2563eb",),
+    "pb": ("C0",),
+    "hd": ("C2",),
+    "ad": ("C3",),
 }
 
 
@@ -301,10 +303,10 @@ class _DispatchStyle:
 
 _DISPATCH_STYLES: dict[str, _DispatchStyle] = {
     "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
-    "greedyx": _DispatchStyle(linestyle="-", color_factor=0.8, marker_scale=1.0),
-    "batch": _DispatchStyle(linestyle=":", color_factor=0.2, marker_scale=0),
-    "rbatch": _DispatchStyle(linestyle="--", color_factor=0.75, marker_scale=1.25),
-    "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.55, marker_scale=1.7),
+    "greedyx": _DispatchStyle(linestyle="-.", color_factor=1.0, marker_scale=1.0),
+    "batch": _DispatchStyle(linestyle=":", color_factor=0.4, marker_scale=0.8),
+    "rbatch": _DispatchStyle(linestyle="--", color_factor=0.8, marker_scale=1.25),
+    "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.6, marker_scale=1.1),
     "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
 }
 
@@ -811,34 +813,34 @@ def _plot_metric_sweep(
             base_color = color_map.get(shadow, "#636363")
             dispatch_style = _dispatch_style(dispatch)
             final_color = _scale_color(base_color, dispatch_style.color_factor)
-            marker = None if is_hd_shadow else _shadow_marker(shadow)
-            linestyle = "-." if is_hd_shadow else dispatch_style.linestyle
-            markersize = _BASE_MARKERSIZE * dispatch_style.marker_scale
+            marker = _shadow_marker(shadow)
+            linestyle = dispatch_style.linestyle
+            markersize = 0 if is_hd_shadow else _BASE_MARKERSIZE * dispatch_style.marker_scale
 
-        if is_hd_shadow:
-            yerr = None
-            ax.plot(
-                xs,
-                ys,
-                color=final_color,
-                linestyle=linestyle,
-                marker=marker,
-                label=label,
-            )
-        else:
-            ax.errorbar(
-                xs,
-                ys,
-                yerr=yerr,
-                color=final_color,
-                marker=marker,
-                linestyle=linestyle,
-                markersize=markersize,
-                markerfacecolor=final_color,
-                markeredgecolor=final_color,
-                capsize=3,
-                label=label,
-            )
+        # if is_hd_shadow:
+        #     yerr = None
+        #     ax.plot(
+        #         xs,
+        #         ys,
+        #         color=final_color,
+        #         linestyle=linestyle,
+        #         marker=marker,
+        #         label=label,
+        #     )
+        # else:
+        ax.errorbar(
+            xs,
+            ys,
+            yerr=yerr,
+            color=final_color,
+            marker=marker,
+            linestyle=linestyle,
+            markersize=markersize,
+            markerfacecolor=final_color,
+            markeredgecolor=final_color,
+            capsize=3,
+            label=label,
+        )
         drew_any = True
 
         if metric_base == "time_s":
@@ -872,7 +874,7 @@ def _plot_metric_sweep(
     ax.grid(True, which="both", alpha=0.3)
 
     if drew_any and show_legend:
-        ncol = max(1, min(4, len(policies)))
+        ncol = max(1, min(3, len(policies)))
         ax.legend(
             loc="lower center",
             bbox_to_anchor=(0.5, 1.02),
