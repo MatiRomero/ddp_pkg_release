@@ -590,7 +590,7 @@ def run_instance(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tau_s: float = 30.0,
-    tie_breaker: str = "distance",
+    tie_breaker: str = "random",
     ad_duals: AverageDualTable
     | Mapping[object, float]
     | Sequence[float]
@@ -1163,7 +1163,7 @@ def run_once(
     gamma_plus: float | None = 1.0,
     tau_plus: float | None = None,
     tau_s: float = 30.0,
-    tie_breaker: str = "distance",
+    tie_breaker: str = "random",
     ad_duals: AverageDualTable
     | Mapping[object, float]
     | Sequence[float]
@@ -1480,6 +1480,11 @@ def main() -> None:
             "Path to a CSV file that can be parsed by ddp.scripts.csv_loader.load_jobs_from_csv."
         ),
     )
+    group.add_argument(
+        "--n",
+        type=int,
+        help="Generate n synthetic jobs on the fly using --seed (requires --seed).",
+    )
     p.add_argument(
         "--timestamp-column",
         default="platform_order_time",
@@ -1561,7 +1566,7 @@ def main() -> None:
     )
     p.add_argument(
         "--tie_breaker",
-        default="distance",
+        default="random",
         choices=["distance", "random"],
         help=(
             "Tie-breaking rule for greedy candidate selection when scores are equal. "
@@ -1599,6 +1604,28 @@ def main() -> None:
             "Module:function resolving to an average-dual mapper used with type-indexed tables."
         ),
     )
+    p.add_argument(
+        "--fix-origin-zero",
+        action="store_true",
+        help="Set every generated job origin to the depot at (0, 0) (only used with --n).",
+    )
+    p.add_argument(
+        "--flatten-axis",
+        choices=["x", "y"],
+        help="Project all jobs onto a single axis by zeroing the chosen coordinate (only used with --n).",
+    )
+    p.add_argument(
+        "--beta-alpha",
+        type=float,
+        default=1.0,
+        help="Alpha parameter for Beta distribution (default: 1.0, which gives uniform distribution). Only used with --n.",
+    )
+    p.add_argument(
+        "--beta-beta",
+        type=float,
+        default=1.0,
+        help="Beta parameter for Beta distribution (default: 1.0, which gives uniform distribution). Only used with --n.",
+    )
     args = p.parse_args()
 
     origins: np.ndarray
@@ -1622,8 +1649,34 @@ def main() -> None:
         origins = np.array([job.origin for job in jobs], dtype=float)
         dests = np.array([job.dest for job in jobs], dtype=float)
         timestamps = np.array([job.timestamp for job in jobs], dtype=float)
+    elif args.n is not None:
+        if args.n <= 1:
+            raise SystemExit("--n must be greater than 1")
+        rng = np.random.default_rng(args.seed)
+        jobs = generate_jobs(args.n, rng, beta_alpha=args.beta_alpha, beta_beta=args.beta_beta)
+        
+        # Apply geometric transforms if requested
+        if args.fix_origin_zero:
+            jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
+        
+        if args.flatten_axis is not None:
+            axis = 0 if args.flatten_axis == "x" else 1
+            
+            def _flatten(point: tuple[float, float]) -> tuple[float, float]:
+                coords = [float(point[0]), float(point[1])]
+                coords[axis] = 0.0
+                return coords[0], coords[1]
+            
+            jobs = [
+                Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
+                for job in jobs
+            ]
+        
+        origins = np.array([job.origin for job in jobs], dtype=float)
+        dests = np.array([job.dest for job in jobs], dtype=float)
+        timestamps = np.array([job.timestamp for job in jobs], dtype=float)
     else:  # pragma: no cover - argparse enforces exclusivity, but defensive
-        raise SystemExit("Provide either --jobs or --jobs-csv")
+        raise SystemExit("Provide either --jobs, --jobs-csv, or --n")
 
     if not (len(origins) == len(dests) == len(timestamps)):
         raise SystemExit("Mismatched job array lengths in provided job data")

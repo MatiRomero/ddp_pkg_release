@@ -17,7 +17,7 @@ def simulate(
     weight_fn=None,                # base weight for matching: reward - s_i - s_j
     shadow=None,                   # vector s_i (needed for critical adjustment)
     seed=0,
-    tie_breaker: str = "distance",
+    tie_breaker: str = "random",
     event_hook=None,               # optional callback(time, available, due_now, phase)
     tau_s: float = 30.0,
     dispatch_hook=None,            # optional callback(time, dispatched_indices)

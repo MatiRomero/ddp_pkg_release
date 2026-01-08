@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from ddp.engine.opt import compute_lp_relaxation
-from ddp.model import generate_jobs
+from ddp.model import generate_jobs, Job
 from ddp.scripts.run import reward_fn
 
 
@@ -46,6 +46,28 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Destination CSV file for the generated dataset.",
+    )
+    parser.add_argument(
+        "--fix-origin-zero",
+        action="store_true",
+        help="Set every generated job origin to the depot at (0, 0)",
+    )
+    parser.add_argument(
+        "--flatten-axis",
+        choices=["x", "y"],
+        help="Project all jobs onto a single axis by zeroing the chosen coordinate",
+    )
+    parser.add_argument(
+        "--beta-alpha",
+        type=float,
+        default=1.0,
+        help="Alpha parameter for Beta distribution (default: 1.0, which gives uniform distribution).",
+    )
+    parser.add_argument(
+        "--beta-beta",
+        type=float,
+        default=1.0,
+        help="Beta parameter for Beta distribution (default: 1.0, which gives uniform distribution).",
     )
     return parser.parse_args()
 
@@ -89,7 +111,25 @@ def main() -> None:
     for instance_id in range(n_instances):
         seed = int(args.seed0) + instance_id
         rng = np.random.default_rng(seed)
-        jobs = generate_jobs(n_jobs, rng)
+        jobs = generate_jobs(n_jobs, rng, beta_alpha=args.beta_alpha, beta_beta=args.beta_beta)
+
+        # Apply fix_origin_zero if requested
+        if args.fix_origin_zero:
+            jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
+
+        # Apply flatten_axis if requested
+        if args.flatten_axis is not None:
+            axis = 0 if args.flatten_axis == "x" else 1
+            
+            def _flatten(point: tuple[float, float]) -> tuple[float, float]:
+                coords = [float(point[0]), float(point[1])]
+                coords[axis] = 0.0
+                return coords[0], coords[1]
+            
+            jobs = [
+                Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
+                for job in jobs
+            ]
 
         start = time.perf_counter()
         lp_result = compute_lp_relaxation(jobs, reward_fn, time_window=deadline)

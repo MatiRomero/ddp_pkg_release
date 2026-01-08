@@ -97,6 +97,8 @@ def _load_data(csv_full: str | None, csv_agg: str | None) -> LoadedData:
     _coerce_numeric(df, numeric_candidates)
 
     df = _augment_with_regret(df, csv_full=csv_full)
+    df = _augment_with_saving_fraction(df)
+    df = _augment_with_lp_policy(df)
 
     return LoadedData(df=df, source=source)
 
@@ -235,6 +237,106 @@ def _augment_with_regret(df: pd.DataFrame, *, csv_full: str | None) -> pd.DataFr
     return df
 
 
+def _augment_with_saving_fraction(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute saving fraction (savings/400) from mean_savings and std_savings."""
+    if "mean_savings" not in df.columns:
+        return df
+
+    # Compute mean_saving_fraction = mean_savings / 400
+    mean_savings = pd.to_numeric(df["mean_savings"], errors="coerce")
+    # df["mean_saving_fraction"] = mean_savings / 400.0
+    df["mean_saving_fraction"] = mean_savings / 500.0
+
+    # Compute std_saving_fraction = std_savings / 400 (if available)
+    if "std_savings" in df.columns:
+        std_savings = pd.to_numeric(df["std_savings"], errors="coerce")
+        # df["std_saving_fraction"] = std_savings / 400.0
+        df["std_saving_fraction"] = std_savings / 500.0
+
+    return df
+
+
+def _augment_with_lp_policy(df: pd.DataFrame) -> pd.DataFrame:
+    """Add LP policy rows by computing LP value from existing policy rows.
+    
+    LP value is the same for all policies in a given configuration, computed as
+    lp_total = mean_savings / mean_ratio_lp. New rows are added with shadow="LP"
+    and dispatch="LP" to represent the LP upper bound as a policy.
+    """
+    # Check if we have the required columns
+    if "mean_savings" not in df.columns or "mean_ratio_lp" not in df.columns:
+        return df
+    
+    # Check if shadow and dispatch columns exist
+    if "shadow" not in df.columns or "dispatch" not in df.columns:
+        return df
+    
+    # Check if LP policy already exists
+    shadow_series = df["shadow"].astype("string")
+    dispatch_series = df["dispatch"].astype("string")
+    lp_exists = shadow_series.str.lower().eq("lp") & dispatch_series.str.lower().eq("lp")
+    if lp_exists.any():
+        # LP policy already exists, skip augmentation
+        return df
+    
+    # Group by configuration columns (all GROUP_FIELDS except shadow and dispatch)
+    config_cols = [
+        col for col in aggregate_results.GROUP_FIELDS
+        if col not in {"shadow", "dispatch"} and col in df.columns
+    ]
+    
+    if not config_cols:
+        return df
+    
+    # Prepare numeric columns
+    mean_savings = pd.to_numeric(df["mean_savings"], errors="coerce")
+    mean_ratio_lp = pd.to_numeric(df["mean_ratio_lp"], errors="coerce")
+    
+    # Group by configuration and compute LP value for each group
+    lp_rows = []
+    for config_key, group_df in df.groupby(config_cols, dropna=False):
+        # Get valid rows (non-NaN mean_savings and mean_ratio_lp)
+        valid_mask = (
+            pd.notna(mean_savings.loc[group_df.index]) &
+            pd.notna(mean_ratio_lp.loc[group_df.index]) &
+            (mean_ratio_lp.loc[group_df.index] > 0)
+        )
+        valid_group = group_df.loc[valid_mask]
+        
+        if valid_group.empty:
+            continue
+        
+        # Compute LP value from first valid row (all should be the same)
+        first_row = valid_group.iloc[0]
+        mean_lp_val = mean_savings.loc[first_row.name] / mean_ratio_lp.loc[first_row.name]
+        
+        if not pd.isna(mean_lp_val) and np.isfinite(mean_lp_val):
+            # Create new LP policy row
+            lp_row = first_row.copy()
+            lp_row["shadow"] = "LP"
+            lp_row["dispatch"] = "LP"
+            lp_row["mean_savings"] = mean_lp_val
+            # LP is deterministic, so std_savings = 0
+            if "std_savings" in lp_row.index:
+                lp_row["std_savings"] = 0.0
+            
+            # Set other metric columns to NaN (LP doesn't have these)
+            for col in lp_row.index:
+                if col.startswith("mean_") and col != "mean_savings":
+                    lp_row[col] = pd.NA
+                if col.startswith("std_") and col != "std_savings":
+                    lp_row[col] = pd.NA
+            
+            lp_rows.append(lp_row)
+    
+    if lp_rows:
+        lp_df = pd.DataFrame(lp_rows)
+        # Concatenate with original dataframe
+        df = pd.concat([df, lp_df], ignore_index=True)
+    
+    return df
+
+
 def _parse_metric_list(metric_arg: str | None, available: Sequence[str]) -> list[str]:
     """Return the metrics requested by the user, validating availability."""
 
@@ -268,17 +370,19 @@ def _policy_key(row: pd.Series) -> str:
 
 
 _METRIC_LABELS: dict[str, str] = {
-    "savings": "total reward",
-    "pooled_pct": "match rate",
-    "ratio_lp": "LP Ratio",
+    "savings": "Total Reward",
+    "pooled_pct": "Match Rate",
+    "ratio_lp": "Integrality Gap",
     "ratio_opt": "Ratio",
     "time_s": "Running Time (s)",
     "regret": "Regret",
+    "saving_fraction": "Saving Fraction",
 }
 
 
 _PARAM_LABELS: dict[str, str] = {
-    "d": "Time window (s)",
+    # "d": "Pooling window (s)",
+    "d": "Density d",
 }
 
 
@@ -291,6 +395,7 @@ _SHADOW_COLOR_FAMILIES: dict[str, tuple[str, ...]] = {
     "pb": ("C0",),
     "hd": ("C2",),
     "ad": ("C3",),
+    "lp": ("#888888",),  # Gray color for LP upper bound
 }
 
 
@@ -302,12 +407,14 @@ class _DispatchStyle:
 
 
 _DISPATCH_STYLES: dict[str, _DispatchStyle] = {
-    "greedy": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    "greedy": _DispatchStyle(linestyle="--", color_factor=1.0, marker_scale=1.0),
     "greedyx": _DispatchStyle(linestyle="-.", color_factor=1.0, marker_scale=1.0),
-    "batch": _DispatchStyle(linestyle=":", color_factor=0.4, marker_scale=0.8),
-    "rbatch": _DispatchStyle(linestyle="--", color_factor=0.8, marker_scale=1.25),
-    "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.6, marker_scale=1.1),
-    "opt": _DispatchStyle(linestyle="-", color_factor=1.0, marker_scale=1.0),
+    "greedy+": _DispatchStyle(linestyle=":", color_factor=1.0, marker_scale=1.0),
+    "batch": _DispatchStyle(linestyle="-", color_factor=0.4, marker_scale=1.0),
+    "rbatch": _DispatchStyle(linestyle="-", color_factor=0.8, marker_scale=1.0),
+    "rbatch2": _DispatchStyle(linestyle="-.", color_factor=0.6, marker_scale=1.0),
+    "opt": _DispatchStyle(linestyle=":", color_factor=1.0, marker_scale=1.0),
+    "lp": _DispatchStyle(linestyle=":", color_factor=1.0, marker_scale=1.0),  # Dotted line for LP
 }
 
 
@@ -327,7 +434,8 @@ _SHADOW_MARKERS: dict[str, str] = {
     "pb": "^",
     "hd": "s",
     "ad": "x",
-    "opt": "D",
+    "opt": "",
+    "lp": "",  # No marker for LP
 }
 
 
@@ -337,7 +445,7 @@ _BASE_MARKERSIZE = 6.5
 _DISPATCH_ORDER: tuple[str, ...] = ("greedy", "greedyx", "batch", "rbatch", "rbatch2", "opt")
 
 
-_SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt")
+_SHADOW_ORDER: tuple[str, ...] = ("naive", "pb", "hd", "ad", "opt", "lp")
 
 
 _POLICY_SHADOW_LABELS: dict[str, str] = {
@@ -346,16 +454,35 @@ _POLICY_SHADOW_LABELS: dict[str, str] = {
     "pb": "PB",
     "hd": "HD",
     "ad": "AD",
+    "lp": "LP",
 }
 
 
 _POLICY_DISPATCH_LABELS: dict[str, str] = {
     "batch": "BAT",
     "rbatch": "RBAT",
-    "rbatch2": "RBAT2",
+    "rbatch2": "PRBAT",
     "greedy": "GRE",
     "greedyx": "GREX",
     "opt": "OPT",
+}
+
+
+_POLICY_CUSTOM_LABELS: dict[str, str] = {
+    "naive+greedy": "GRE",
+    "pb+greedy": "PB",
+    "hd+greedy": "HD",
+    "ad+greedy": "AD",
+    "naive+batch": "BAT",
+    "naive+rbatch": "RBAT",
+    "naive+rbatch2": "PRBAT",
+    "lp+lp": "LP",
+}
+
+
+_POLICY_CUSTOM_MARKERS: dict[str, str] = {
+    "naive+batch": "D",   # diamond
+    "naive+rbatch": "*",  # star
 }
 
 
@@ -431,6 +558,12 @@ def _shadow_marker(shadow: str) -> str:
     return _SHADOW_MARKERS.get(shadow.lower(), "o")
 
 
+def _policy_marker(policy: str) -> str | None:
+    """Return custom marker for a policy if defined, otherwise None."""
+    policy_key = policy.lower() if isinstance(policy, str) else ""
+    return _POLICY_CUSTOM_MARKERS.get(policy_key)
+
+
 def _scale_color(color: str | tuple[float, float, float] | tuple[float, float, float, float], factor: float) -> tuple[float, float, float, float]:
     rgba = mcolors.to_rgba(color)
     r, g, b, a = rgba
@@ -467,12 +600,20 @@ def _policy_sort_key(policy: str) -> tuple[int, int, str]:
 
 
 def _format_policy_label(policy: str) -> str:
+    # Check for custom label first
+    policy_key = policy.lower() if isinstance(policy, str) else ""
+    if policy_key in _POLICY_CUSTOM_LABELS:
+        return _POLICY_CUSTOM_LABELS[policy_key]
+
     shadow, dispatch = _split_policy_key(policy)
     shadow_key = shadow.lower() if isinstance(shadow, str) else ""
     dispatch_key = dispatch.lower() if isinstance(dispatch, str) else ""
 
     if shadow_key == "opt" and dispatch_key == "opt":
         return "OPT"
+    
+    if shadow_key == "lp" and dispatch_key == "lp":
+        return "LP"
 
     def _format_shadow(name: str) -> str:
         if not name:
@@ -809,13 +950,20 @@ def _plot_metric_sweep(
             linestyle = _DISPATCH_STYLES["opt"].linestyle
             final_color = mcolors.to_rgba(_SHADOW_COLOR_FAMILIES["opt"][0])
             markersize = _BASE_MARKERSIZE * _DISPATCH_STYLES["opt"].marker_scale
+        elif shadow == "lp" and dispatch == "lp":
+            marker = _SHADOW_MARKERS["lp"]
+            linestyle = _DISPATCH_STYLES["lp"].linestyle
+            final_color = mcolors.to_rgba(_SHADOW_COLOR_FAMILIES["lp"][0])
+            markersize = 0  # No marker for LP
         else:
             base_color = color_map.get(shadow, "#636363")
             dispatch_style = _dispatch_style(dispatch)
             final_color = _scale_color(base_color, dispatch_style.color_factor)
-            marker = _shadow_marker(shadow)
-            linestyle = dispatch_style.linestyle
-            markersize = 0 if is_hd_shadow else _BASE_MARKERSIZE * dispatch_style.marker_scale
+            # Check for custom marker first, then fall back to shadow marker
+            custom_marker = _policy_marker(policy)
+            marker = custom_marker if custom_marker is not None else _shadow_marker(shadow)
+            linestyle = ':' if is_hd_shadow else dispatch_style.linestyle
+            markersize = 0 if is_hd_shadow else _BASE_MARKERSIZE# * dispatch_style.marker_scale
 
         # if is_hd_shadow:
         #     yerr = None

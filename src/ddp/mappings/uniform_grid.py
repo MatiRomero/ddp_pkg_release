@@ -31,6 +31,7 @@ __all__ = [
     "coarse_mapping",
     "make_mapping",
     "job_mapping",
+    "fine_job_mapping",
 ]
 
 
@@ -128,3 +129,12 @@ def job_mapping(job: Job, mapper: UniformGridMapping = mapping) -> TypeKey:
     origin_x, origin_y = job.origin
     dest_x, dest_y = job.dest
     return mapper(origin_x, origin_y, dest_x, dest_y)
+
+
+def fine_job_mapping(job: Job) -> str:
+    """Return the grid type for ``job`` using ``fine_mapping`` (type_width=0.01) as a string."""
+
+    origin_x, origin_y = job.origin
+    dest_x, dest_y = job.dest
+    type_key = fine_mapping(origin_x, origin_y, dest_x, dest_y)
+    return str(type_key)

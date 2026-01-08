@@ -43,15 +43,31 @@ def _as_point(pair: Sequence[float]) -> Point:
     return float(pair[0]), float(pair[1])
 
 
-def generate_jobs(n: int, rng: np.random.Generator) -> list[Job]:
-    """Generate ``n`` random jobs using the provided RNG with timestamps starting at 1."""
+def generate_jobs(
+    n: int,
+    rng: np.random.Generator,
+    beta_alpha: float | None = None,
+    beta_beta: float | None = None,
+) -> list[Job]:
+    """Generate ``n`` random jobs using the provided RNG with timestamps starting at 1.
+    
+    Args:
+        n: Number of jobs to generate
+        rng: Random number generator
+        beta_alpha: Alpha parameter for Beta distribution (if None, uses uniform)
+        beta_beta: Beta parameter for Beta distribution (if None, uses uniform)
+    """
 
     if n <= 1:
         msg = "Number of jobs must exceed one"
         raise ValueError(msg)
 
-    origins = rng.random((n, 2))
-    destinations = rng.random((n, 2))
+    if beta_alpha is not None and beta_beta is not None:
+        origins = rng.beta(beta_alpha, beta_beta, size=(n, 2))
+        destinations = rng.beta(beta_alpha, beta_beta, size=(n, 2))
+    else:
+        origins = rng.random((n, 2))
+        destinations = rng.random((n, 2))
     timestamps = np.arange(1, n + 1, dtype=float)
     return [
         Job(

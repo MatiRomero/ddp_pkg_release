@@ -33,6 +33,7 @@ def resolve_repo_path(p):
 _COLUMN_TO_FLAG: dict[str, str] = {
     "jobs_csv": "--jobs-csv",
     "jobs": "--jobs",
+    "n": "--n",
     "save_csv": "--save_csv",
     "save_job_csv": "--save_job_csv",
     "d": "--d",
@@ -54,10 +55,18 @@ _COLUMN_TO_FLAG: dict[str, str] = {
     "ad_duals": "--ad_duals",
     "ad_resolution": "--ad_resolution",
     "ad_resolutions": "--ad_resolutions",
-    "ad_mapping": "--ad_mapping",
+    "ad_mapping": "--ad-mapping",
+    "fix_origin_zero": "--fix-origin-zero",
+    "fix-origin-zero": "--fix-origin-zero",
+    "flatten_axis": "--flatten-axis",
+    "flatten-axis": "--flatten-axis",
+    "beta_alpha": "--beta-alpha",
+    "beta-alpha": "--beta-alpha",
+    "beta_beta": "--beta-beta",
+    "beta-beta": "--beta-beta",
 }
 
-_BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details"}
+_BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details", "fix_origin_zero", "fix-origin-zero"}
 _REPEATABLE_COLUMNS = {"ad_resolution"}
 
 
@@ -109,16 +118,22 @@ def main() -> None:
 
     jobs_csv = resolve_repo_path(_normalise(row.get("jobs_csv")))
     jobs_npz = resolve_repo_path(_normalise(row.get("jobs")))
-    if jobs_csv and jobs_npz:
-        raise SystemExit("Provide only one of 'jobs_csv' or 'jobs' in the config row")
+    n_value = _normalise(row.get("n"))
+    
+    if sum([bool(jobs_csv), bool(jobs_npz), bool(n_value)]) > 1:
+        raise SystemExit("Provide only one of 'jobs_csv', 'jobs', or 'n' in the config row")
+    
     if jobs_csv:
         job_flag = "--jobs-csv"
         job_value = jobs_csv
     elif jobs_npz:
         job_flag = "--jobs"
         job_value = jobs_npz
+    elif n_value:
+        job_flag = "--n"
+        job_value = n_value
     else:
-        raise SystemExit("Config row missing required 'jobs_csv' or 'jobs' entry")
+        raise SystemExit("Config row missing required 'jobs_csv', 'jobs', or 'n' entry")
 
     save_csv = resolve_repo_path(_normalise(row.get("save_csv")))
     if not save_csv:
@@ -155,7 +170,7 @@ def main() -> None:
         cmd.extend(["--save_job_csv", job_detail_csv])
 
     for column, value in row.items():
-        if column in {"jobs_csv", "jobs", "save_csv", "save_job_csv", "d", "shadow", "shadows"}:
+        if column in {"jobs_csv", "jobs", "n", "save_csv", "save_job_csv", "d", "shadow", "shadows"}:
             continue
         flag = _COLUMN_TO_FLAG.get(column)
         if not flag:
