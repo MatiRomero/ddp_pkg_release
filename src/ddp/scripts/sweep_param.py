@@ -74,10 +74,12 @@ def _prepare_jobs(
     *,
     fix_origin_zero: bool,
     flatten_axis: str | None,
+    beta_alpha: float | None = None,
+    beta_beta: float | None = None,
 ) -> list[Job]:
     """Generate jobs and apply optional geometric transforms."""
 
-    jobs = generate_jobs(n, rng)
+    jobs = generate_jobs(n, rng, beta_alpha=beta_alpha, beta_beta=beta_beta)
     if fix_origin_zero:
         jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
 
@@ -135,6 +137,8 @@ def _run_trials_for_config(
             rng,
             fix_origin_zero=args.fix_origin_zero,
             flatten_axis=args.flatten_axis,
+            beta_alpha=args.beta_alpha,
+            beta_beta=args.beta_beta,
         )
         result = run_instance(
             jobs=jobs,
@@ -230,6 +234,18 @@ def main() -> None:
         "--flatten_axis",
         choices=["x", "y"],
         help="Project all jobs onto a single axis by zeroing the chosen coordinate",
+    )
+    parser.add_argument(
+        "--beta-alpha",
+        type=float,
+        default=1.0,
+        help="Alpha parameter for Beta distribution (default: 1.0, which gives uniform distribution)",
+    )
+    parser.add_argument(
+        "--beta-beta",
+        type=float,
+        default=1.0,
+        help="Beta parameter for Beta distribution (default: 1.0, which gives uniform distribution)",
     )
     parser.add_argument(
         "--ad_duals",
