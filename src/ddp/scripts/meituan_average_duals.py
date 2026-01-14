@@ -42,7 +42,7 @@ from ddp.engine.opt import compute_lp_relaxation
 from ddp.model import Job
 from ddp.mappings.h3_pairs import H3PairMapping, make_mapping
 from ddp.scripts.csv_loader import load_jobs_from_csv
-from ddp.scripts.run import reward_fn
+from ddp.scripts.run import make_reward_fn
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def _load_jobs(path: Path, timestamp_column: str) -> list[Job]:
     return jobs
 
 
-def _solve_hd_duals(jobs: Sequence[Job], deadline: float) -> np.ndarray:
+def _solve_hd_duals(jobs: Sequence[Job], deadline: float, reward_fn) -> np.ndarray:
     """Solve the LP relaxation for ``jobs`` and return the dual vector."""
 
     result = compute_lp_relaxation(jobs, reward_fn, time_window=deadline)
@@ -110,11 +110,12 @@ def compute_day_hd_duals(
     snapshot: Path,
     timestamp_column: str,
     deadline: float,
+    reward_fn,
 ) -> "pd.DataFrame":
     """Load ``snapshot`` and compute the HD duals for ``day``."""
 
     jobs = _load_jobs(snapshot, timestamp_column=timestamp_column)
-    duals = _solve_hd_duals(jobs, deadline=deadline)
+    duals = _solve_hd_duals(jobs, deadline, reward_fn)
     return _jobs_to_frame(day, jobs, duals)
 
 
@@ -361,6 +362,7 @@ def ensure_hd_cache(
     cache_dir: Path,
     timestamp_column: str,
     deadline: float,
+    reward_fn,
     force: bool = False,
 ) -> pd.DataFrame:
     _pd = _require_pandas()
@@ -375,6 +377,7 @@ def ensure_hd_cache(
         snapshot=snapshot,
         timestamp_column=timestamp_column,
         deadline=deadline,
+        reward_fn=reward_fn,
     )
     frame.to_csv(cache_path, index=False)
     return frame
@@ -398,6 +401,7 @@ def build_average_duals(
     resolution: int,
     history_days: Sequence[int] | None,
     neighbor_radius: int,
+    reward_fn,
     force: bool = False,
 ) -> PipelineResult:
     _pd = _require_pandas()
@@ -414,6 +418,7 @@ def build_average_duals(
         cache_dir=cache_dir,
         timestamp_column=timestamp_column,
         deadline=deadline,
+        reward_fn=reward_fn,
         force=force,
     )
     target_frame = add_h3_columns(target_frame, mapper)
@@ -435,6 +440,7 @@ def build_average_duals(
             cache_dir=cache_dir,
             timestamp_column=timestamp_column,
             deadline=deadline,
+            reward_fn=reward_fn,
             force=force,
         )
         frame = add_h3_columns(frame, mapper)
@@ -607,6 +613,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional HTML path for a Folium sender coverage map",
     )
+    parser.add_argument(
+        "--reward-type",
+        default="pooling",
+        choices=["pooling", "rewardC", "rewardB"],
+        help="Reward function type for LP relaxation computation",
+    )
     return parser
 
 
@@ -629,6 +641,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     default_export_dir = Path(args.export_dir)
     default_export_dir.mkdir(parents=True, exist_ok=True)
 
+    # Create reward function based on reward_type
+    reward_fn = make_reward_fn(args.reward_type)
+
     result = build_average_duals(
         day=int(args.day),
         data_dir=args.data_dir,
@@ -639,6 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolution=int(args.resolution),
         history_days=args.history_days,
         neighbor_radius=int(args.neighbor_radius),
+        reward_fn=reward_fn,
         force=bool(args.force),
     )
 

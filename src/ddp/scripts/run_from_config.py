@@ -56,17 +56,17 @@ _COLUMN_TO_FLAG: dict[str, str] = {
     "ad_resolution": "--ad_resolution",
     "ad_resolutions": "--ad_resolutions",
     "ad_mapping": "--ad-mapping",
-    "fix_origin_zero": "--fix-origin-zero",
-    "fix-origin-zero": "--fix-origin-zero",
-    "flatten_axis": "--flatten-axis",
-    "flatten-axis": "--flatten-axis",
+    "het_origins": "--het-origins",
+    "het-origins": "--het-origins",
+    "dimension": "--dimension",
     "beta_alpha": "--beta-alpha",
     "beta-alpha": "--beta-alpha",
     "beta_beta": "--beta-beta",
     "beta-beta": "--beta-beta",
+    "reward_type": "--reward-type",
 }
 
-_BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details", "fix_origin_zero", "fix-origin-zero"}
+_BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details", "het_origins", "het-origins"}
 _REPEATABLE_COLUMNS = {"ad_resolution"}
 
 

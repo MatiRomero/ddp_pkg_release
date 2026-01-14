@@ -17,7 +17,7 @@ import numpy as np
 from ddp.algorithms.potential import potential as potential_vec
 from ddp.engine.opt import compute_lp_relaxation, compute_opt
 from ddp.engine.sim import simulate
-from ddp.model import Job, generate_jobs, reward as pooling_reward
+from ddp.model import Job, generate_jobs, reward as pooling_reward, distance
 from ddp.scripts.csv_loader import load_jobs_from_csv
 
 _POLICY_DEFAULT_GAMMA: dict[str, float] = {
@@ -401,8 +401,46 @@ def _load_precomputed_ad_shadows(
     )
 
 
+def make_reward_fn(reward_type: str = "pooling"):
+    """Factory to create reward_fn with specified type.
+    
+    Args:
+        reward_type: "pooling" (distance savings, default), "rewardC" (distance between jobs),
+                     "rewardB" (1 - distance, assumes max_distance=1 with --dimension 1)
+    
+    Returns:
+        A reward function that takes (i: int, j: int, jobs: Sequence[Job]) -> float
+    """
+    if reward_type == "pooling":
+        def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
+            """Toy pooling reward: distance saved when merging jobs ``i`` and ``j``."""
+            return pooling_reward([jobs[i], jobs[j]])
+        return reward_fn
+    elif reward_type == "rewardC":
+        def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
+            """Reward = distance between origins + distance between destinations."""
+            job_i = jobs[i]
+            job_j = jobs[j]
+            return distance(job_i.origin, job_j.origin) + distance(job_i.dest, job_j.dest)
+        return reward_fn
+    elif reward_type == "rewardB":
+        def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
+            """Reward = 1.0 - distance (assumes max_distance=1 with --dimension 1)."""
+            job_i = jobs[i]
+            job_j = jobs[j]
+            dist = distance(job_i.origin, job_j.origin) + distance(job_i.dest, job_j.dest)
+            return 1.0 - dist
+        return reward_fn
+    else:
+        raise ValueError(f"Unknown reward_type: {reward_type}. Choose from: pooling, rewardC, rewardB")
+
+
 def reward_fn(i: int, j: int, jobs: Sequence[Job]) -> float:
-    """Toy pooling reward: distance saved when merging jobs ``i`` and ``j``."""
+    """Toy pooling reward: distance saved when merging jobs ``i`` and ``j``.
+    
+    This is the default reward_fn instance for backward compatibility.
+    Use make_reward_fn() to create reward functions with different types.
+    """
 
     return pooling_reward([jobs[i], jobs[j]])
 
@@ -591,6 +629,7 @@ def run_instance(
     tau_plus: float | None = None,
     tau_s: float = 30.0,
     tie_breaker: str = "random",
+    reward_type: str = "pooling",
     ad_duals: AverageDualTable
     | Mapping[object, float]
     | Sequence[float]
@@ -682,6 +721,30 @@ def run_instance(
     timestamps = np.array([job.timestamp for job in jobs], dtype=float)
     lengths = np.array([job.length for job in jobs], dtype=float)
 
+    # Create reward function instance based on reward_type
+    reward_fn_instance = make_reward_fn(reward_type)
+
+    # Assert geometry requirements for rewardC/rewardB reward types
+    if reward_type in {"rewardC", "rewardB"}:
+        # Check that all origins are at (0, 0) (default unless --het-origins is used)
+        for i, job in enumerate(jobs):
+            if job.origin != (0.0, 0.0):
+                raise ValueError(
+                    f"reward_type='{reward_type}' requires all origins at (0, 0) "
+                    f"(don't use --het-origins), but job {i} has origin {job.origin}"
+                )
+        # Check that all jobs are flattened to a single axis (dimension 1, default)
+        # Either all x-coordinates are 0 (dimension 1, flatten to y-axis) 
+        # or all y-coordinates are 0 (dimension 1, flatten to x-axis, default)
+        all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
+        all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
+        
+        if not (all_x_zero or all_y_zero):
+            raise ValueError(
+                f"reward_type='{reward_type}' requires --dimension 1 "
+                f"(all jobs must be on a single axis), but jobs have mixed coordinates"
+            )
+
     # compute due_time for plotting/debug (not used by simulate)
     if np.isscalar(d):
         due_time = timestamps + float(d)
@@ -692,7 +755,7 @@ def run_instance(
 
     # LP (upper bound + duals for HD) — compute once
     t0 = time.perf_counter()
-    lp = compute_lp_relaxation(jobs, reward_fn, time_window=d)
+    lp = compute_lp_relaxation(jobs, reward_fn_instance, time_window=d)
     lp_time = time.perf_counter() - t0
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
@@ -702,7 +765,7 @@ def run_instance(
     opt_time = 0.0
     if with_opt:
         t0 = time.perf_counter()
-        opt = compute_opt(jobs, reward_fn, method=opt_method, time_window=d)
+        opt = compute_opt(jobs, reward_fn_instance, method=opt_method, time_window=d)
         opt_time = time.perf_counter() - t0
         opt_total = float(opt["total_reward"])
         opt_pairs = opt["pairs"]
@@ -730,7 +793,36 @@ def run_instance(
         if sh == "naive":
             variant_entries.append((None, np.zeros(n, dtype=float)))
         elif sh == "pb":
-            variant_entries.append((None, potential_vec(lengths)))
+            if reward_type == "rewardB":
+                # For rewardB: constant shadow of 0.5
+                sp_pb = np.full(n, 0.5, dtype=float)
+            elif reward_type == "rewardC":
+                # For rewardC: shadow[j] = 0.5 * max(y, 1-y) where y is the unique non-zero coordinate
+                sp_pb = np.zeros(n, dtype=float)
+                
+                # Detect which axis was flattened
+                # If all x-coordinates are 0, jobs are on y-axis, use y-coordinate (dest[1])
+                # If all y-coordinates are 0, jobs are on x-axis, use x-coordinate (dest[0])
+                all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
+                all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
+                
+                if all_y_zero:
+                    # Dimension 1, flatten to y-axis (x=0): use x-coordinate (dest[0])
+                    coord_idx = 0
+                elif all_x_zero:
+                    # Dimension 1, flatten to x-axis (y=0, default): use y-coordinate (dest[1])
+                    coord_idx = 1
+                else:
+                    # Should not happen if assertions passed, but fallback
+                    coord_idx = 0
+                
+                for i, job in enumerate(jobs):
+                    y = float(job.dest[coord_idx])
+                    sp_pb[i] = 0.5 * max(y, 1.0 - y)
+            else:
+                # Default pooling reward: use length-based potential
+                sp_pb = potential_vec(lengths)
+            variant_entries.append((None, sp_pb))
         elif sh == "hd":
             variant_entries.append((None, duals))
         elif sh == "ad":
@@ -778,13 +870,13 @@ def run_instance(
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "naive",
                         time_window=d,
                         policy="score",
@@ -798,13 +890,13 @@ def run_instance(
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "prescreen",
                         time_window=d,
                         policy="score",
@@ -818,13 +910,13 @@ def run_instance(
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "threshold",
                         time_window=d,
                         policy="score",
@@ -838,14 +930,14 @@ def run_instance(
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
-                    w_fn = make_weight_fn(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
+                    w_fn = make_weight_fn(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="batch",
@@ -860,15 +952,15 @@ def run_instance(
                     tau_s_eff = tau_s
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
-                    w_fn = make_weight_fn(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
+                    w_fn = make_weight_fn(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     tau_s_value = float(tau_s_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="batch2",
@@ -883,14 +975,14 @@ def run_instance(
                     tau_plus_eff = tau_plus if tau_plus is not None else 0.0
                     sp_plus = np.array(sp_base, dtype=float, copy=True)
                     sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                    score_plus = make_local_score(reward_fn, sp_plus)
-                    weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    score_plus = make_local_score(reward_fn_instance, sp_plus)
+                    weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
                     gamma_plus_value = float(gamma_plus_eff)
                     tau_plus_value = float(tau_plus_eff)
                     res = simulate(
                         jobs,
                         score_plus,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="batch",
@@ -904,14 +996,14 @@ def run_instance(
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
-                    w_fn = make_weight_fn(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
+                    w_fn = make_weight_fn(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="rbatch",
@@ -926,15 +1018,15 @@ def run_instance(
                     tau_s_eff = tau_s
                     sp = np.array(sp_base, dtype=float, copy=True)
                     sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn, sp)
-                    w_fn = make_weight_fn(reward_fn, sp)
+                    score_fn = make_local_score(reward_fn_instance, sp)
+                    w_fn = make_weight_fn(reward_fn_instance, sp)
                     gamma_value = float(gamma_eff)
                     tau_value = float(tau_eff)
                     tau_s_value = float(tau_s_eff)
                     res = simulate(
                         jobs,
                         score_fn,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="rbatch2",
@@ -949,14 +1041,14 @@ def run_instance(
                     tau_plus_eff = tau_plus if tau_plus is not None else 0.0
                     sp_plus = np.array(sp_base, dtype=float, copy=True)
                     sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                    score_plus = make_local_score(reward_fn, sp_plus)
-                    weight_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+                    score_plus = make_local_score(reward_fn_instance, sp_plus)
+                    weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
                     gamma_plus_value = float(gamma_plus_eff)
                     tau_plus_value = float(tau_plus_eff)
                     res = simulate(
                         jobs,
                         score_plus,
-                        reward_fn,
+                        reward_fn_instance,
                         "policy",
                         time_window=d,
                         policy="rbatch",
@@ -1164,6 +1256,7 @@ def run_once(
     tau_plus: float | None = None,
     tau_s: float = 30.0,
     tie_breaker: str = "random",
+    reward_type: str = "pooling",
     ad_duals: AverageDualTable
     | Mapping[object, float]
     | Sequence[float]
@@ -1193,19 +1286,71 @@ def run_once(
     jobs = generate_jobs(n, rng)
     lengths = np.array([job.length for job in jobs], dtype=float)
 
-    lp = compute_lp_relaxation(jobs, reward_fn, time_window=d)
+    # Create reward function instance based on reward_type
+    reward_fn_instance = make_reward_fn(reward_type)
+
+    # Assert geometry requirements for rewardC/rewardB reward types
+    if reward_type in {"rewardC", "rewardB"}:
+        # Check that all origins are at (0, 0) (default unless --het-origins is used)
+        for i, job in enumerate(jobs):
+            if job.origin != (0.0, 0.0):
+                raise ValueError(
+                    f"reward_type='{reward_type}' requires all origins at (0, 0) "
+                    f"(don't use --het-origins), but job {i} has origin {job.origin}"
+                )
+        # Check that all jobs are flattened to a single axis (dimension 1, default)
+        # Either all x-coordinates are 0 (dimension 1, flatten to y-axis) 
+        # or all y-coordinates are 0 (dimension 1, flatten to x-axis, default)
+        all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
+        all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
+        
+        if not (all_x_zero or all_y_zero):
+            raise ValueError(
+                f"reward_type='{reward_type}' requires --dimension 1 "
+                f"(all jobs must be on a single axis), but jobs have mixed coordinates"
+            )
+
+    lp = compute_lp_relaxation(jobs, reward_fn_instance, time_window=d)
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
 
     opt_total = None
     if with_opt:
-        opt = compute_opt(jobs, reward_fn, method=opt_method, time_window=d)
+        opt = compute_opt(jobs, reward_fn_instance, method=opt_method, time_window=d)
         opt_total = float(opt["total_reward"])
 
     if shadow == "naive":
         sp_base = np.zeros(n, dtype=float)
     elif shadow == "pb":
-        sp_base = potential_vec(lengths)
+        if reward_type == "rewardB":
+            # For rewardB: constant shadow of 0.5
+            sp_base = np.full(n, 0.5, dtype=float)
+        elif reward_type == "rewardC":
+            # For rewardC: shadow[j] = 0.5 * max(y, 1-y) where y is the unique non-zero coordinate
+            sp_base = np.zeros(n, dtype=float)
+            
+            # Detect which axis was flattened
+            # If all x-coordinates are 0, jobs are on y-axis, use y-coordinate (dest[1])
+            # If all y-coordinates are 0, jobs are on x-axis, use x-coordinate (dest[0])
+            all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
+            all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
+            
+            if all_y_zero:
+                # Dimension 1, flatten to y-axis (x=0): use x-coordinate (dest[0])
+                coord_idx = 0
+            elif all_x_zero:
+                # Dimension 1, flatten to x-axis (y=0, default): use y-coordinate (dest[1])
+                coord_idx = 1
+            else:
+                # Should not happen if assertions passed, but fallback
+                coord_idx = 0
+            
+            for i, job in enumerate(jobs):
+                y = float(job.dest[coord_idx])
+                sp_base[i] = 0.5 * max(y, 1.0 - y)
+        else:
+            # Default pooling reward: use length-based potential
+            sp_base = potential_vec(lengths)
     elif shadow == "hd":
         sp_base = duals
     elif shadow == "ad":
@@ -1223,7 +1368,7 @@ def run_once(
         tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value: float | None = None
@@ -1231,7 +1376,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "naive",
             time_window=d,
             policy="score",
@@ -1245,7 +1390,7 @@ def run_once(
         tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value = None
@@ -1253,7 +1398,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "prescreen",
             time_window=d,
             policy="score",
@@ -1267,7 +1412,7 @@ def run_once(
         tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value = None
@@ -1275,7 +1420,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "threshold",
             time_window=d,
             policy="score",
@@ -1289,8 +1434,8 @@ def run_once(
         tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
-        w_fn = make_weight_fn(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value = None
@@ -1298,7 +1443,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "policy",
             time_window=d,
             policy="batch",
@@ -1338,8 +1483,8 @@ def run_once(
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-        score_fn_plus = make_local_score(reward_fn, sp_plus)
-        w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+        score_fn_plus = make_local_score(reward_fn_instance, sp_plus)
+        w_fn_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
         gamma_value = None
         tau_value = None
         gamma_plus_value = float(gamma_plus_eff)
@@ -1347,7 +1492,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn_plus,
-            reward_fn,
+            reward_fn_instance,
             "policy",
             time_window=d,
             policy="batch",
@@ -1361,8 +1506,8 @@ def run_once(
         tau_eff = tau
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
-        w_fn = make_weight_fn(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value = None
@@ -1370,7 +1515,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "policy",
             time_window=d,
             policy="rbatch",
@@ -1385,8 +1530,8 @@ def run_once(
         tau_s_eff = tau_s
         sp = np.array(sp_base, dtype=float, copy=True)
         sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
-        w_fn = make_weight_fn(reward_fn, sp)
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
         gamma_value = float(gamma_eff)
         tau_value = float(tau_eff)
         gamma_plus_value = None
@@ -1395,7 +1540,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn,
-            reward_fn,
+            reward_fn_instance,
             "policy",
             time_window=d,
             policy="rbatch2",
@@ -1410,8 +1555,8 @@ def run_once(
         tau_plus_eff = tau_plus if tau_plus is not None else 0.0
         sp_plus = np.array(sp_base, dtype=float, copy=True)
         sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-        score_fn_plus = make_local_score(reward_fn, sp_plus)
-        w_fn_plus = make_weight_fn_latest_shadow(reward_fn, sp_plus)
+        score_fn_plus = make_local_score(reward_fn_instance, sp_plus)
+        w_fn_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
         gamma_value = None
         tau_value = None
         gamma_plus_value = float(gamma_plus_eff)
@@ -1419,7 +1564,7 @@ def run_once(
         res = simulate(
             jobs,
             score_fn_plus,
-            reward_fn,
+            reward_fn_instance,
             "policy",
             time_window=d,
             policy="rbatch",
@@ -1605,14 +1750,17 @@ def main() -> None:
         ),
     )
     p.add_argument(
-        "--fix-origin-zero",
+        "--het-origins",
+        dest="het_origins",
         action="store_true",
-        help="Set every generated job origin to the depot at (0, 0) (only used with --n).",
+        help="Allow heterogeneous origins (default: all origins at (0, 0)). Only used with --n.",
     )
     p.add_argument(
-        "--flatten-axis",
-        choices=["x", "y"],
-        help="Project all jobs onto a single axis by zeroing the chosen coordinate (only used with --n).",
+        "--dimension",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Dimensionality: 1 (projects to x-axis, default) or 2 (full 2D). Only used with --n.",
     )
     p.add_argument(
         "--beta-alpha",
@@ -1625,6 +1773,12 @@ def main() -> None:
         type=float,
         default=1.0,
         help="Beta parameter for Beta distribution (default: 1.0, which gives uniform distribution). Only used with --n.",
+    )
+    p.add_argument(
+        "--reward-type",
+        default="pooling",
+        choices=["pooling", "rewardC", "rewardB"],
+        help="Reward function type: 'pooling' (distance savings, default), 'rewardC' (distance between jobs), 'rewardB' (1 - distance, assumes max_distance=1)",
     )
     args = p.parse_args()
 
@@ -1655,12 +1809,14 @@ def main() -> None:
         rng = np.random.default_rng(args.seed)
         jobs = generate_jobs(args.n, rng, beta_alpha=args.beta_alpha, beta_beta=args.beta_beta)
         
-        # Apply geometric transforms if requested
-        if args.fix_origin_zero:
+        # Apply geometric transforms
+        # Default: fix origins at (0, 0) unless --het-origins is specified
+        if not args.het_origins:
             jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
         
-        if args.flatten_axis is not None:
-            axis = 0 if args.flatten_axis == "x" else 1
+        # Default: dimension 1 (flatten to x-axis, zeros y-coordinate)
+        if args.dimension == 1:
+            axis = 1  # Zero y-coordinate (axis 1) to project onto x-axis
             
             def _flatten(point: tuple[float, float]) -> tuple[float, float]:
                 coords = [float(point[0]), float(point[1])]
@@ -1671,6 +1827,7 @@ def main() -> None:
                 Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
                 for job in jobs
             ]
+        # dimension == 2: no flattening, keep full 2D
         
         origins = np.array([job.origin for job in jobs], dtype=float)
         dests = np.array([job.dest for job in jobs], dtype=float)
@@ -1793,6 +1950,7 @@ def main() -> None:
         save_job_csv=args.save_job_csv,
         print_table=True,
         return_details=args.return_details,
+        reward_type=args.reward_type,
         print_matches=args.print_matches,
         gamma=args.gamma,
         tau=args.tau,

@@ -54,14 +54,14 @@ def _iter_rows(
     include_job_details: bool,
     generate_on_fly: bool = False,
     n: int | None = None,
-    fix_origin_zero: bool = False,
-    flatten_axis: str | None = None,
-    ad_data_dir: str | None = None,
-    ad_base_path: str | None = None,
+    het_origins: bool = False,
+    dimension: int = 1,
+    ad_path_template: str | None = None,
     with_opt: bool = False,
     beta_alpha: float = 1.0,
     beta_beta: float = 1.0,
     ad_mapping: str | None = None,
+    reward_type: str | None = None,
 ) -> Iterable[dict[str, str]]:
     for seed in seeds:
         for d in d_values:
@@ -82,10 +82,10 @@ def _iter_rows(
                         "save_csv": str(save_path),
                         "save_job_csv": str(job_details_path) if include_job_details else "",
                     }
-                    if fix_origin_zero:
-                        row["fix_origin_zero"] = "1"
-                    if flatten_axis:
-                        row["flatten_axis"] = flatten_axis
+                    if het_origins:
+                        row["het_origins"] = "1"
+                    if dimension != 1:  # Default is 1, only include if different
+                        row["dimension"] = str(dimension)
                     # Always include beta parameters (defaults to 1.0, 1.0 for uniform)
                     row["beta_alpha"] = str(beta_alpha)
                     row["beta_beta"] = str(beta_beta)
@@ -104,20 +104,37 @@ def _iter_rows(
                     }
                 
                 # Add AD parameters if shadow is 'ad'
-                if shadow == "ad" and ad_data_dir:
+                if shadow == "ad":
                     d_int = int(d)
                     n_value = n if n is not None else 1000  # Default to 1000 if n not specified
                     # Determine suffix based on geometry
-                    if fix_origin_zero and flatten_axis:
+                    # Default: origins at (0,0) and dimension 1 (1D, common origin)
+                    if not het_origins and dimension == 1:
                         suffix = "_1d_common_origin"
-                    elif fix_origin_zero:
+                    elif not het_origins:
                         suffix = "_common_origin"
+                    elif dimension == 1:
+                        suffix = "_1d"
                     else:
                         suffix = ""
-                    if ad_base_path:
-                        ad_duals_path = f"{ad_base_path}/{ad_data_dir}/ad_uniform_grid_n{n_value}{suffix}_d{d_int}.csv"
+                    
+                    # Add _beta suffix if beta parameters are non-uniform
+                    if beta_alpha != 1.0 or beta_beta != 1.0:
+                        suffix = suffix + "_beta"
+                    
+                    # Use provided template or default
+                    if ad_path_template is not None:
+                        try:
+                            ad_duals_path = ad_path_template.format(n=n_value, d=d_int, suffix=suffix)
+                        except KeyError as exc:
+                            raise ValueError(
+                                f"Invalid placeholder in --ad-path-template: {exc}. "
+                                f"Supported placeholders: {{n}}, {{d}}, {{suffix}}"
+                            ) from exc
                     else:
-                        ad_duals_path = f"{ad_data_dir}/ad_uniform_grid_n{n_value}{suffix}_d{d_int}.csv"
+                        # Default template for backward compatibility
+                        ad_duals_path = f"data/ad_uniform_grid_n{n_value}{suffix}_d{d_int}.csv"
+                    
                     row["ad_duals"] = ad_duals_path
                     row["ad_mapping"] = ad_mapping if ad_mapping is not None else "ddp.mappings.uniform_grid:job_mapping"
                 else:
@@ -127,6 +144,10 @@ def _iter_rows(
                 # Add with_opt if requested
                 if with_opt:
                     row["with_opt"] = "1"
+                
+                # Add reward_type if provided
+                if reward_type:
+                    row["reward_type"] = reward_type
                 
                 yield row
 
@@ -190,14 +211,17 @@ def main() -> None:
         help="Number of jobs to generate (required when --generate-on-fly is used)",
     )
     parser.add_argument(
-        "--fix-origin-zero",
+        "--het-origins",
+        dest="het_origins",
         action="store_true",
-        help="Set every generated job origin to the depot at (0, 0)",
+        help="Allow heterogeneous origins (default: all origins at (0, 0))",
     )
     parser.add_argument(
-        "--flatten-axis",
-        choices=["x", "y"],
-        help="Project all jobs onto a single axis by zeroing the chosen coordinate",
+        "--dimension",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Dimensionality: 1 (projects to x-axis, default) or 2 (full 2D)",
     )
     parser.add_argument(
         "--beta-alpha",
@@ -218,14 +242,9 @@ def main() -> None:
         help="Leave the save_job_csv column empty",
     )
     parser.add_argument(
-        "--ad-data-dir",
-        default="data",
-        help="Directory containing AD lookup files (relative to repo root or --ad-base-path)",
-    )
-    parser.add_argument(
-        "--ad-base-path",
+        "--ad-path-template",
         default=None,
-        help="Base path prefix for absolute AD file paths (e.g., /user/mer2262/ddp_pkg_release). If not provided, uses relative paths.",
+        help="Template for AD file paths. Supports placeholders: {n} (n value), {d} (d value as int), {suffix} (auto-generated suffix). If not provided, defaults to 'data/ad_uniform_grid_n{n}{suffix}_d{d}.csv'",
     )
     parser.add_argument(
         "--ad-mapping",
@@ -236,6 +255,12 @@ def main() -> None:
         "--with-opt",
         action="store_true",
         help="Compute OPT (offline optimal) for regret/ratio calculations",
+    )
+    parser.add_argument(
+        "--reward-type",
+        default=None,
+        choices=["pooling", "rewardC", "rewardB"],
+        help="Reward function type (default: pooling). Leave unset to use default.",
     )
     parser.set_defaults(include_job_details=True)
 
@@ -287,14 +312,14 @@ def main() -> None:
                     include_job_details=args.include_job_details,
                     generate_on_fly=args.generate_on_fly,
                     n=args.n,
-                    fix_origin_zero=args.fix_origin_zero,
-                    flatten_axis=args.flatten_axis,
-                    ad_data_dir=args.ad_data_dir,
-                    ad_base_path=args.ad_base_path,
+                    het_origins=args.het_origins,
+                    dimension=args.dimension,
+                    ad_path_template=args.ad_path_template,
                     with_opt=args.with_opt,
                     beta_alpha=args.beta_alpha,
                     beta_beta=args.beta_beta,
                     ad_mapping=args.ad_mapping,
+                    reward_type=args.reward_type,
                 )
             )
     else:
@@ -314,14 +339,14 @@ def main() -> None:
                     include_job_details=args.include_job_details,
                     generate_on_fly=args.generate_on_fly,
                     n=args.n,
-                    fix_origin_zero=args.fix_origin_zero,
-                    flatten_axis=args.flatten_axis,
-                    ad_data_dir=args.ad_data_dir,
-                    ad_base_path=args.ad_base_path,
+                    het_origins=args.het_origins,
+                    dimension=args.dimension,
+                    ad_path_template=args.ad_path_template,
                     with_opt=args.with_opt,
                     beta_alpha=args.beta_alpha,
                     beta_beta=args.beta_beta,
                     ad_mapping=args.ad_mapping,
+                    reward_type=args.reward_type,
                 )
             )
 
@@ -331,10 +356,10 @@ def main() -> None:
     base_headers = ["d", "shadows", "dispatch", "seed", "save_csv", "save_job_csv"]
     if args.generate_on_fly:
         headers = ["n"] + base_headers
-        if args.fix_origin_zero:
-            headers.append("fix_origin_zero")
-        if args.flatten_axis:
-            headers.append("flatten_axis")
+        if args.het_origins:
+            headers.append("het_origins")
+        if args.dimension != 1:  # Default is 1, only include if different
+            headers.append("dimension")
         # Always include beta parameters (defaults to 1.0, 1.0 for uniform)
         headers.extend(["beta_alpha", "beta_beta"])
     else:
@@ -347,6 +372,10 @@ def main() -> None:
     # Add with_opt column if requested
     if args.with_opt:
         headers.append("with_opt")
+    
+    # Add reward_type column if provided
+    if args.reward_type:
+        headers.append("reward_type")
 
     with config_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=headers)

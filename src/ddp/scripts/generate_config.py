@@ -42,6 +42,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "print_matches": [""],
     "return_details": [""],
     "tie_breaker": [""],
+    "reward_type": [""],
     "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
     # "ad_duals": [""],
     "ad_resolution": ["8"],

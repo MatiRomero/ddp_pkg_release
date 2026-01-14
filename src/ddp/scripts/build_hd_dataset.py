@@ -12,7 +12,7 @@ import numpy as np
 
 from ddp.engine.opt import compute_lp_relaxation
 from ddp.model import generate_jobs, Job
-from ddp.scripts.run import reward_fn
+from ddp.scripts.run import make_reward_fn
 
 
 def _parse_args() -> argparse.Namespace:
@@ -48,14 +48,17 @@ def _parse_args() -> argparse.Namespace:
         help="Destination CSV file for the generated dataset.",
     )
     parser.add_argument(
-        "--fix-origin-zero",
+        "--het-origins",
+        dest="het_origins",
         action="store_true",
-        help="Set every generated job origin to the depot at (0, 0)",
+        help="Allow heterogeneous origins (default: all origins at (0, 0))",
     )
     parser.add_argument(
-        "--flatten-axis",
-        choices=["x", "y"],
-        help="Project all jobs onto a single axis by zeroing the chosen coordinate",
+        "--dimension",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Dimensionality: 1 (projects to x-axis, default) or 2 (full 2D)",
     )
     parser.add_argument(
         "--beta-alpha",
@@ -68,6 +71,12 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="Beta parameter for Beta distribution (default: 1.0, which gives uniform distribution).",
+    )
+    parser.add_argument(
+        "--reward-type",
+        default="pooling",
+        choices=["pooling", "rewardC", "rewardB"],
+        help="Reward function type for LP relaxation computation",
     )
     return parser.parse_args()
 
@@ -104,6 +113,9 @@ def main() -> None:
         raise ValueError("--n must exceed one to form pairings")
 
     deadline = float(args.d)
+    
+    # Create reward function based on reward_type
+    reward_fn = make_reward_fn(args.reward_type)
 
     rows: list[dict[str, float | int]] = []
     solve_times: list[float] = []
@@ -113,13 +125,14 @@ def main() -> None:
         rng = np.random.default_rng(seed)
         jobs = generate_jobs(n_jobs, rng, beta_alpha=args.beta_alpha, beta_beta=args.beta_beta)
 
-        # Apply fix_origin_zero if requested
-        if args.fix_origin_zero:
+        # Apply geometric transforms
+        # Default: fix origins at (0, 0) unless --het-origins is specified
+        if not args.het_origins:
             jobs = [Job(origin=(0.0, 0.0), dest=job.dest, timestamp=job.timestamp) for job in jobs]
 
-        # Apply flatten_axis if requested
-        if args.flatten_axis is not None:
-            axis = 0 if args.flatten_axis == "x" else 1
+        # Default: dimension 1 (flatten to x-axis, zeros y-coordinate)
+        if args.dimension == 1:
+            axis = 1  # Zero y-coordinate (axis 1) to project onto x-axis
             
             def _flatten(point: tuple[float, float]) -> tuple[float, float]:
                 coords = [float(point[0]), float(point[1])]
@@ -130,6 +143,7 @@ def main() -> None:
                 Job(origin=_flatten(job.origin), dest=_flatten(job.dest), timestamp=job.timestamp)
                 for job in jobs
             ]
+        # dimension == 2: no flattening, keep full 2D
 
         start = time.perf_counter()
         lp_result = compute_lp_relaxation(jobs, reward_fn, time_window=deadline)

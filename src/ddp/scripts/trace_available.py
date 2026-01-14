@@ -21,8 +21,11 @@ from ddp.scripts.run import (
     make_weight_fn_latest_shadow,
     load_average_dual_mapper,
     load_average_duals,
-    reward_fn,
+    make_reward_fn,
 )
+
+# Default reward_fn instance for backward compatibility
+reward_fn = make_reward_fn("pooling")
 
 
 def _load_jobs(path: str) -> list[Job]:

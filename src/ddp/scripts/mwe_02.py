@@ -10,7 +10,10 @@ import numpy as np
 from ddp.algorithms.potential import potential as potential_vec
 from ddp.engine.opt import max_weight_matching_subset
 from ddp.model import Job
-from ddp.scripts.run import make_weight_fn, reward_fn, run_instance
+from ddp.scripts.run import make_weight_fn, make_reward_fn, run_instance
+
+# Default reward_fn instance for backward compatibility
+reward_fn = make_reward_fn("pooling")
 
 
 def _format_job(job: Job, due_time: float, idx: int) -> str:
