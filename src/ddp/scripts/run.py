@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import importlib
+import json
 import math
 import os
 import re
@@ -19,6 +20,8 @@ from ddp.engine.opt import compute_lp_relaxation, compute_opt
 from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward, distance
 from ddp.scripts.csv_loader import load_jobs_from_csv
+from ddp.utils.logging_utils import setup_logging
+from ddp.utils.metadata import collect_metadata
 
 _POLICY_DEFAULT_GAMMA: dict[str, float] = {
     "greedy": 1.0,
@@ -610,6 +613,440 @@ class _DispatchCandidate:
     job_rows: list[dict[str, object]] | None = None
 
 
+def _compute_shadow_base(
+    shadow: str,
+    n: int,
+    jobs: Sequence[Job],
+    lengths: np.ndarray,
+    duals: np.ndarray,
+    reward_type: str,
+    ad_duals: AverageDualTable
+    | Mapping[object, float]
+    | Sequence[float]
+    | np.ndarray
+    | None = None,
+    ad_mapper: Callable[[Job], str | None] | None = None,
+) -> np.ndarray:
+    """Compute shadow base values for a single shadow type.
+    
+    Parameters
+    ----------
+    shadow : str
+        Shadow type: "naive", "pb", "hd", or "ad"
+    n : int
+        Number of jobs
+    jobs : Sequence[Job]
+        Job sequence
+    lengths : np.ndarray
+        Job lengths array
+    duals : np.ndarray
+        Hindsight duals (for "hd" shadow)
+    reward_type : str
+        Reward function type ("pooling", "rewardB", "rewardC")
+    ad_duals : optional
+        Average duals lookup (for "ad" shadow)
+    ad_mapper : optional
+        Mapper function for type-indexed AD tables
+        
+    Returns
+    -------
+    np.ndarray
+        Shadow base values (n elements)
+        
+    Raises
+    ------
+    ValueError
+        If shadow type is unknown
+    AverageDualError
+        If AD shadows are requested but not provided
+    """
+    if shadow == "naive":
+        return np.zeros(n, dtype=float)
+    elif shadow == "pb":
+        if reward_type == "rewardB":
+            # For rewardB: constant shadow of 0.5
+            return np.full(n, 0.5, dtype=float)
+        elif reward_type == "rewardC":
+            # For rewardC: shadow[j] = 0.5 * max(y, 1-y) where y is the unique non-zero coordinate
+            sp_pb = np.zeros(n, dtype=float)
+            
+            # Detect which axis was flattened
+            all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
+            all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
+            
+            if all_y_zero:
+                # Dimension 1, flatten to y-axis (x=0): use x-coordinate (dest[0])
+                coord_idx = 0
+            elif all_x_zero:
+                # Dimension 1, flatten to x-axis (y=0, default): use y-coordinate (dest[1])
+                coord_idx = 1
+            else:
+                # Should not happen if assertions passed, but fallback
+                coord_idx = 0
+            
+            for i, job in enumerate(jobs):
+                y = float(job.dest[coord_idx])
+                sp_pb[i] = 0.5 * max(y, 1.0 - y)
+            return sp_pb
+        else:
+            # Default pooling reward: use length-based potential
+            return potential_vec(lengths)
+    elif shadow == "hd":
+        return duals
+    elif shadow == "ad":
+        if ad_duals is None:
+            raise AverageDualError("Average-dual shadows require the 'ad_duals' table")
+        return _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
+    else:
+        raise ValueError(f"Unknown shadow: {shadow}")
+
+
+def _run_dispatch_policy(
+    dispatch: str,
+    jobs: Sequence[Job],
+    reward_fn_instance: Callable[[int, int, Sequence[Job]], float],
+    sp_base: np.ndarray,
+    d: float | np.ndarray,
+    seed: int,
+    tie_breaker: str,
+    gamma: float | None,
+    tau: float,
+    gamma_plus: float | None,
+    tau_plus: float | None,
+    tau_s: float,
+) -> tuple[dict[str, Any], float, float, float, float | None, float | None, float | None]:
+    """Run a single dispatch policy and return results.
+    
+    Parameters
+    ----------
+    dispatch : str
+        Dispatch policy name
+    jobs : Sequence[Job]
+        Job sequence
+    reward_fn_instance : callable
+        Reward function
+    sp_base : np.ndarray
+        Base shadow values
+    d : float or np.ndarray
+        Deadline(s)
+    seed : int
+        Random seed
+    tie_breaker : str
+        Tie-breaking method ("random" or "distance")
+    gamma : float or None
+        Shadow scaling factor
+    tau : float
+        Shadow additive offset
+    gamma_plus : float or None
+        Plus variant shadow scaling
+    tau_plus : float or None
+        Plus variant shadow offset
+    tau_s : float
+        Periodic policy period
+        
+    Returns
+    -------
+    tuple
+        (sim_result, run_time, gamma_value, tau_value, gamma_plus_value, tau_plus_value, tau_s_value)
+        where sim_result is the simulation output dict
+    """
+    t_run = time.perf_counter()
+    gamma_value: float | None = None
+    tau_value: float | None = None
+    gamma_plus_value: float | None = None
+    tau_plus_value: float | None = None
+    tau_s_value: float | None = None
+    
+    if dispatch == "greedy":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "naive",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "greedyx":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "prescreen",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "greedy+":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "threshold",
+            time_window=d,
+            policy="score",
+            weight_fn=None,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "batch":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="batch",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "batch2":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        tau_s_eff = tau_s
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        tau_s_value = float(tau_s_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="batch2",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+            tau_s=tau_s_eff,
+        )
+    elif dispatch == "batch+":
+        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+        tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+        sp_plus = np.array(sp_base, dtype=float, copy=True)
+        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+        score_plus = make_local_score(reward_fn_instance, sp_plus)
+        weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
+        gamma_plus_value = float(gamma_plus_eff)
+        tau_plus_value = float(tau_plus_eff)
+        res = simulate(
+            jobs,
+            score_plus,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="batch",
+            weight_fn=weight_plus,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "rbatch":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="rbatch",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    elif dispatch == "rbatch2":
+        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
+        tau_eff = tau
+        tau_s_eff = tau_s
+        sp = np.array(sp_base, dtype=float, copy=True)
+        sp = sp * gamma_eff + tau_eff
+        score_fn = make_local_score(reward_fn_instance, sp)
+        w_fn = make_weight_fn(reward_fn_instance, sp)
+        gamma_value = float(gamma_eff)
+        tau_value = float(tau_eff)
+        tau_s_value = float(tau_s_eff)
+        res = simulate(
+            jobs,
+            score_fn,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="rbatch2",
+            weight_fn=w_fn,
+            shadow=sp,
+            seed=seed,
+            tie_breaker=tie_breaker,
+            tau_s=tau_s_eff,
+        )
+    elif dispatch == "rbatch+":
+        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
+        tau_plus_eff = tau_plus if tau_plus is not None else 0.0
+        sp_plus = np.array(sp_base, dtype=float, copy=True)
+        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
+        score_plus = make_local_score(reward_fn_instance, sp_plus)
+        weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
+        gamma_plus_value = float(gamma_plus_eff)
+        tau_plus_value = float(tau_plus_eff)
+        res = simulate(
+            jobs,
+            score_plus,
+            reward_fn_instance,
+            "policy",
+            time_window=d,
+            policy="rbatch",
+            weight_fn=weight_plus,
+            shadow=None,
+            seed=seed,
+            tie_breaker=tie_breaker,
+        )
+    else:
+        raise ValueError(f"Unknown dispatch: {dispatch}")
+    
+    run_time = time.perf_counter() - t_run
+    return res, run_time, gamma_value, tau_value, gamma_plus_value, tau_plus_value, tau_s_value
+
+
+def _compute_summary_metrics(
+    res: dict[str, Any],
+    lp_total: float,
+    opt_total: float | None,
+    with_opt: bool,
+    n: int,
+    d: float | np.ndarray,
+    seed: int,
+    shadow: str,
+    dispatch: str,
+    resolution_label: str | None,
+    run_time: float,
+    gamma_value: float | None,
+    tau_value: float | None,
+    gamma_plus_value: float | None,
+    tau_plus_value: float | None,
+    tau_s_value: float | None,
+) -> dict[str, Any]:
+    """Compute summary metrics from simulation results.
+    
+    Parameters
+    ----------
+    res : dict
+        Simulation result dict
+    lp_total : float
+        LP relaxation upper bound
+    opt_total : float or None
+        OPT total reward
+    with_opt : bool
+        Whether OPT was computed
+    n : int
+        Number of jobs
+    d : float or np.ndarray
+        Deadline(s)
+    seed : int
+        Random seed
+    shadow : str
+        Shadow type
+    dispatch : str
+        Dispatch policy
+    resolution_label : str or None
+        AD resolution label (if applicable)
+    run_time : float
+        Runtime in seconds
+    gamma_value, tau_value, etc. : optional floats
+        Policy parameter values
+        
+    Returns
+    -------
+    dict
+        Summary row dict with all metrics
+    """
+    r = res["total_savings"]
+    pooled_pct = res["pooled_pct"]
+    ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
+    gap_lp = _safe_gap(lp_total, r)
+    ratio_opt_val: float | None = None
+    gap_opt_val: float | None = None
+    if with_opt and opt_total is not None:
+        ratio_opt_val = (r / opt_total) if opt_total > 0 else float("nan")
+        gap_opt_val = _safe_gap(opt_total, r)
+    ratio_opt_for_row = (
+        ratio_opt_val if (with_opt and opt_total and opt_total > 0) else None
+    )
+    opt_gap_for_row = gap_opt_val if (with_opt and opt_total is not None) else None
+
+    return {
+        "shadow": shadow,
+        "dispatch": dispatch,
+        "ad_resolution": resolution_label if shadow == "ad" else None,
+        "n": n,
+        "d": d if np.isscalar(d) else None,
+        "seed": seed,
+        "savings": r,
+        "pooled_pct": pooled_pct,
+        "ratio_lp": ratio_lp,
+        "lp_gap": gap_lp,
+        "ratio_opt": ratio_opt_for_row,
+        "opt_gap": opt_gap_for_row,
+        "pairs": len(res["pairs"]),
+        "solos": len(res["solos"]),
+        "time_s": run_time,
+        "method": ("score" if "greedy" in dispatch else dispatch),
+        "gamma": gamma_value,
+        "tau": tau_value,
+        "gamma_plus": gamma_plus_value,
+        "tau_plus": tau_plus_value,
+        "tau_s": tau_s_value,
+    }
+
+
 def run_instance(
     jobs: Sequence[Job],
     d,
@@ -669,6 +1106,50 @@ def run_instance(
     resolution and the dispatch policy results are compared, favouring higher
     savings and then the lowest resolution (numeric when possible) on ties.
     """
+    
+    jobs = list(jobs)
+    n = len(jobs)
+    
+    # Set up metadata logging if output directory is specified
+    output_dir: Path | None = None
+    if save_csv:
+        output_dir = Path(save_csv).parent.resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        setup_logging(output_dir / "logs.txt")
+        
+        # Collect and write metadata
+        args_dict = {
+            "n": n,
+            "d": d,
+            "seed": seed,
+            "shadows": list(shadows) if isinstance(shadows, (list, tuple)) else shadows,
+            "dispatches": list(dispatches) if isinstance(dispatches, (list, tuple)) else dispatches,
+            "with_opt": with_opt,
+            "opt_method": opt_method,
+            "gamma": gamma,
+            "tau": tau,
+            "gamma_plus": gamma_plus,
+            "tau_plus": tau_plus,
+            "tau_s": tau_s,
+            "tie_breaker": tie_breaker,
+            "reward_type": reward_type,
+            "save_csv": save_csv,
+            "save_job_csv": save_job_csv,
+            "print_table": print_table,
+            "return_details": return_details,
+            "print_matches": print_matches,
+        }
+        if ad_duals is not None:
+            args_dict["ad_duals"] = str(ad_duals) if hasattr(ad_duals, "__str__") else "provided"
+        if ad_mapper is not None:
+            args_dict["ad_mapper"] = str(ad_mapper)
+        
+        metadata = collect_metadata()
+        with open(output_dir / "meta.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        with open(output_dir / "args.json", "w") as f:
+            json.dump(args_dict, f, indent=2, default=str)
 
     def _format_shadow_label(shadow_name: str, resolution_label: str | None) -> str:
         base = shadow_name.upper()
@@ -716,8 +1197,6 @@ def run_instance(
         sorted_items = sorted(items, key=sort_key)
         return sorted_items[0]
 
-    jobs = list(jobs)
-    n = len(jobs)
     timestamps = np.array([job.timestamp for job in jobs], dtype=float)
     lengths = np.array([job.length for job in jobs], dtype=float)
 
@@ -790,66 +1269,35 @@ def run_instance(
 
     for sh in shadows:
         variant_entries: list[tuple[str | None, np.ndarray]] = []
-        if sh == "naive":
-            variant_entries.append((None, np.zeros(n, dtype=float)))
-        elif sh == "pb":
-            if reward_type == "rewardB":
-                # For rewardB: constant shadow of 0.5
-                sp_pb = np.full(n, 0.5, dtype=float)
-            elif reward_type == "rewardC":
-                # For rewardC: shadow[j] = 0.5 * max(y, 1-y) where y is the unique non-zero coordinate
-                sp_pb = np.zeros(n, dtype=float)
-                
-                # Detect which axis was flattened
-                # If all x-coordinates are 0, jobs are on y-axis, use y-coordinate (dest[1])
-                # If all y-coordinates are 0, jobs are on x-axis, use x-coordinate (dest[0])
-                all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
-                all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
-                
-                if all_y_zero:
-                    # Dimension 1, flatten to y-axis (x=0): use x-coordinate (dest[0])
-                    coord_idx = 0
-                elif all_x_zero:
-                    # Dimension 1, flatten to x-axis (y=0, default): use y-coordinate (dest[1])
-                    coord_idx = 1
-                else:
-                    # Should not happen if assertions passed, but fallback
-                    coord_idx = 0
-                
-                for i, job in enumerate(jobs):
-                    y = float(job.dest[coord_idx])
-                    sp_pb[i] = 0.5 * max(y, 1.0 - y)
+        if sh == "ad" and ad_duals_by_resolution is not None:
+            # Handle multi-resolution AD case
+            if isinstance(ad_duals_by_resolution, Mapping):
+                items = list(ad_duals_by_resolution.items())
             else:
-                # Default pooling reward: use length-based potential
-                sp_pb = potential_vec(lengths)
-            variant_entries.append((None, sp_pb))
-        elif sh == "hd":
-            variant_entries.append((None, duals))
-        elif sh == "ad":
-            if ad_duals_by_resolution is not None:
-                if isinstance(ad_duals_by_resolution, Mapping):
-                    items = list(ad_duals_by_resolution.items())
-                else:
-                    items = list(ad_duals_by_resolution)
-                items.sort(key=lambda item: _resolution_sort_key(item[0]))
-                for resolution_label, payload in items:
-                    array = np.asarray(payload, dtype=float)
-                    if array.shape[0] != n:
-                        raise AverageDualError(
-                            "Average-dual array does not match the number of jobs"
-                        )
-                    variant_entries.append((resolution_label, array))
-            else:
-                if ad_duals is None:
+                items = list(ad_duals_by_resolution)
+            items.sort(key=lambda item: _resolution_sort_key(item[0]))
+            for resolution_label, payload in items:
+                array = np.asarray(payload, dtype=float)
+                if array.shape[0] != n:
                     raise AverageDualError(
-                        "Average-dual shadows require the precomputed 'ad_duals' table."
+                        "Average-dual array does not match the number of jobs"
                     )
-                sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
-                variant_entries.append((None, sp_base))
+                variant_entries.append((resolution_label, array))
         else:
-            if print_table:
-                print(f"[skip] Unknown shadow: {sh}")
-            continue
+            # Single shadow computation
+            try:
+                sp_base = _compute_shadow_base(
+                    sh, n, jobs, lengths, duals, reward_type, ad_duals, ad_mapper
+                )
+                variant_entries.append((None, sp_base))
+            except ValueError:
+                if print_table:
+                    print(f"[skip] Unknown shadow: {sh}")
+                continue
+            except AverageDualError:
+                if print_table:
+                    print(f"[skip] {sh} shadow requires ad_duals")
+                continue
 
         if not variant_entries:
             continue
@@ -859,248 +1307,44 @@ def run_instance(
         for resolution_label, sp_base in variant_entries:
             dispatch_candidates: dict[str, _DispatchCandidate] = {}
             for disp in dispatches:
-                t_run = time.perf_counter()
-                gamma_value: float | None = None
-                tau_value: float | None = None
-                gamma_plus_value: float | None = None
-                tau_plus_value: float | None = None
-                tau_s_value: float | None = None
-                if disp == "greedy":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "naive",
-                        time_window=d,
-                        policy="score",
-                        weight_fn=None,
-                        shadow=None,
+                try:
+                    res, run_time, gamma_value, tau_value, gamma_plus_value, tau_plus_value, tau_s_value = _run_dispatch_policy(
+                        dispatch=disp,
+                        jobs=jobs,
+                        reward_fn_instance=reward_fn_instance,
+                        sp_base=sp_base,
+                        d=d,
                         seed=seed,
                         tie_breaker=tie_breaker,
+                        gamma=gamma,
+                        tau=tau,
+                        gamma_plus=gamma_plus,
+                        tau_plus=tau_plus,
+                        tau_s=tau_s,
                     )
-                elif disp == "greedyx":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "prescreen",
-                        time_window=d,
-                        policy="score",
-                        weight_fn=None,
-                        shadow=None,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                elif disp == "greedy+":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "threshold",
-                        time_window=d,
-                        policy="score",
-                        weight_fn=None,
-                        shadow=None,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                elif disp == "batch":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="batch",
-                        weight_fn=w_fn,
-                        shadow=sp,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                elif disp == "batch2":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    tau_s_eff = tau_s
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    tau_s_value = float(tau_s_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="batch2",
-                        weight_fn=w_fn,
-                        shadow=sp,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                        tau_s=tau_s_eff,
-                    )
-                elif disp == "batch+":
-                    gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-                    tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-                    sp_plus = np.array(sp_base, dtype=float, copy=True)
-                    sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                    score_plus = make_local_score(reward_fn_instance, sp_plus)
-                    weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
-                    gamma_plus_value = float(gamma_plus_eff)
-                    tau_plus_value = float(tau_plus_eff)
-                    res = simulate(
-                        jobs,
-                        score_plus,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="batch",
-                        weight_fn=weight_plus,
-                        shadow=None,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                elif disp == "rbatch":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="rbatch",
-                        weight_fn=w_fn,
-                        shadow=sp,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                elif disp == "rbatch2":
-                    gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
-                    tau_eff = tau
-                    tau_s_eff = tau_s
-                    sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
-                    score_fn = make_local_score(reward_fn_instance, sp)
-                    w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
-                    tau_value = float(tau_eff)
-                    tau_s_value = float(tau_s_eff)
-                    res = simulate(
-                        jobs,
-                        score_fn,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="rbatch2",
-                        weight_fn=w_fn,
-                        shadow=sp,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                        tau_s=tau_s_eff,
-                    )
-                elif disp == "rbatch+":
-                    gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-                    tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-                    sp_plus = np.array(sp_base, dtype=float, copy=True)
-                    sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-                    score_plus = make_local_score(reward_fn_instance, sp_plus)
-                    weight_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
-                    gamma_plus_value = float(gamma_plus_eff)
-                    tau_plus_value = float(tau_plus_eff)
-                    res = simulate(
-                        jobs,
-                        score_plus,
-                        reward_fn_instance,
-                        "policy",
-                        time_window=d,
-                        policy="rbatch",
-                        weight_fn=weight_plus,
-                        shadow=None,
-                        seed=seed,
-                        tie_breaker=tie_breaker,
-                    )
-                else:
+                except ValueError:
                     if print_table:
                         print(f"[skip] Unknown dispatch: {disp}")
                     continue
 
-                run_time = time.perf_counter() - t_run
-
-                r = res["total_savings"]
-                pooled_pct = res["pooled_pct"]
-                ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
-                gap_lp = _safe_gap(lp_total, r)
-                ratio_opt_val: float | None = None
-                gap_opt_val: float | None = None
-                if with_opt and opt_total is not None:
-                    ratio_opt_val = (r / opt_total) if opt_total > 0 else float("nan")
-                    gap_opt_val = _safe_gap(opt_total, r)
-                ratio_opt_for_row = (
-                    ratio_opt_val if (with_opt and opt_total and opt_total > 0) else None
+                row = _compute_summary_metrics(
+                    res=res,
+                    lp_total=lp_total,
+                    opt_total=opt_total,
+                    with_opt=with_opt,
+                    n=n,
+                    d=d,
+                    seed=seed,
+                    shadow=sh,
+                    dispatch=disp,
+                    resolution_label=resolution_label,
+                    run_time=run_time,
+                    gamma_value=gamma_value,
+                    tau_value=tau_value,
+                    gamma_plus_value=gamma_plus_value,
+                    tau_plus_value=tau_plus_value,
+                    tau_s_value=tau_s_value,
                 )
-                opt_gap_for_row = gap_opt_val if (with_opt and opt_total is not None) else None
-
-                row = {
-                    "shadow": sh,
-                    "dispatch": disp,
-                    "ad_resolution": resolution_label if sh == "ad" else None,
-                    "n": n,
-                    "d": d if np.isscalar(d) else None,
-                    "seed": seed,
-                    "savings": r,
-                    "pooled_pct": pooled_pct,
-                    "ratio_lp": ratio_lp,
-                    "lp_gap": gap_lp,
-                    "ratio_opt": ratio_opt_for_row,
-                    "opt_gap": opt_gap_for_row,
-                    "pairs": len(res["pairs"]),
-                    "solos": len(res["solos"]),
-                    "time_s": run_time,
-                    "method": ("score" if "greedy" in disp else disp),
-                    "gamma": gamma_value,
-                    "tau": tau_value,
-                    "gamma_plus": gamma_plus_value,
-                    "tau_plus": tau_plus_value,
-                    "tau_s": tau_s_value,
-                }
 
                 detail: dict[str, Any] | None = None
                 if return_details or print_matches:
@@ -1279,6 +1523,40 @@ def run_once(
     The ``ad_duals`` lookup, when provided with ``shadow='ad'``, must already
     contain one value per generated job just like :func:`run_instance`.
     """
+    
+    # Set up metadata logging (run_once doesn't write CSV, so use a default location)
+    output_dir = Path("results") / f"run_once_n{n}_d{d}_seed{seed}_{shadow}_{dispatch}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(output_dir / "logs.txt")
+    
+    # Collect and write metadata
+    args_dict = {
+        "n": n,
+        "d": d,
+        "seed": seed,
+        "shadow": shadow,
+        "dispatch": dispatch,
+        "with_opt": with_opt,
+        "opt_method": opt_method,
+        "gamma": gamma,
+        "tau": tau,
+        "gamma_plus": gamma_plus,
+        "tau_plus": tau_plus,
+        "tau_s": tau_s,
+        "tie_breaker": tie_breaker,
+        "reward_type": reward_type,
+    }
+    if ad_duals is not None:
+        args_dict["ad_duals"] = str(ad_duals) if hasattr(ad_duals, "__str__") else "provided"
+    if ad_mapper is not None:
+        args_dict["ad_mapper"] = str(ad_mapper)
+    
+    metadata = collect_metadata()
+    with open(output_dir / "meta.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+    
+    with open(output_dir / "args.json", "w") as f:
+        json.dump(args_dict, f, indent=2, default=str)
 
     rng = np.random.default_rng(seed)
     if n <= 1:
@@ -1319,293 +1597,45 @@ def run_once(
         opt = compute_opt(jobs, reward_fn_instance, method=opt_method, time_window=d)
         opt_total = float(opt["total_reward"])
 
-    if shadow == "naive":
-        sp_base = np.zeros(n, dtype=float)
-    elif shadow == "pb":
-        if reward_type == "rewardB":
-            # For rewardB: constant shadow of 0.5
-            sp_base = np.full(n, 0.5, dtype=float)
-        elif reward_type == "rewardC":
-            # For rewardC: shadow[j] = 0.5 * max(y, 1-y) where y is the unique non-zero coordinate
-            sp_base = np.zeros(n, dtype=float)
-            
-            # Detect which axis was flattened
-            # If all x-coordinates are 0, jobs are on y-axis, use y-coordinate (dest[1])
-            # If all y-coordinates are 0, jobs are on x-axis, use x-coordinate (dest[0])
-            all_x_zero = all(job.dest[0] == 0.0 for job in jobs)
-            all_y_zero = all(job.dest[1] == 0.0 for job in jobs)
-            
-            if all_y_zero:
-                # Dimension 1, flatten to y-axis (x=0): use x-coordinate (dest[0])
-                coord_idx = 0
-            elif all_x_zero:
-                # Dimension 1, flatten to x-axis (y=0, default): use y-coordinate (dest[1])
-                coord_idx = 1
-            else:
-                # Should not happen if assertions passed, but fallback
-                coord_idx = 0
-            
-            for i, job in enumerate(jobs):
-                y = float(job.dest[coord_idx])
-                sp_base[i] = 0.5 * max(y, 1.0 - y)
-        else:
-            # Default pooling reward: use length-based potential
-            sp_base = potential_vec(lengths)
-    elif shadow == "hd":
-        sp_base = duals
-    elif shadow == "ad":
-        if ad_duals is None:
-            raise AverageDualError("Average-dual shadows require the 'ad_duals' table")
-        sp_base = _load_precomputed_ad_shadows(jobs, ad_duals, mapper=ad_mapper)
-    else:
-        raise ValueError(f"Unknown shadow: {shadow}")
+    sp_base = _compute_shadow_base(
+        shadow, n, jobs, lengths, duals, reward_type, ad_duals, ad_mapper
+    )
 
-    t_run = time.perf_counter()
-    tau_s_value: float | None = None
+    res, run_time, gamma_value, tau_value, gamma_plus_value, tau_plus_value, tau_s_value = _run_dispatch_policy(
+        dispatch=dispatch,
+        jobs=jobs,
+        reward_fn_instance=reward_fn_instance,
+        sp_base=sp_base,
+        d=d,
+        seed=seed,
+        tie_breaker=tie_breaker,
+        gamma=gamma,
+        tau=tau,
+        gamma_plus=gamma_plus,
+        tau_plus=tau_plus,
+        tau_s=tau_s,
+    )
 
-    if dispatch == "greedy":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value: float | None = None
-        tau_plus_value: float | None = None
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "naive",
-            time_window=d,
-            policy="score",
-            weight_fn=None,
-            shadow=None,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "greedyx":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "prescreen",
-            time_window=d,
-            policy="score",
-            weight_fn=None,
-            shadow=None,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "greedy+":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "threshold",
-            time_window=d,
-            policy="score",
-            weight_fn=None,
-            shadow=None,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "batch":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        w_fn = make_weight_fn(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "policy",
-            time_window=d,
-            policy="batch",
-            weight_fn=w_fn,
-            shadow=sp,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "batch2":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        tau_s_eff = tau_s
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn, sp)
-        w_fn = make_weight_fn(reward_fn, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        tau_s_value = float(tau_s_eff)
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn,
-            "policy",
-            time_window=d,
-            policy="batch2",
-            weight_fn=w_fn,
-            shadow=sp,
-            seed=seed,
-            tie_breaker=tie_breaker,
-            tau_s=tau_s_eff,
-        )
-    elif dispatch == "batch+":
-        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-        tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-        sp_plus = np.array(sp_base, dtype=float, copy=True)
-        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-        score_fn_plus = make_local_score(reward_fn_instance, sp_plus)
-        w_fn_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
-        gamma_value = None
-        tau_value = None
-        gamma_plus_value = float(gamma_plus_eff)
-        tau_plus_value = float(tau_plus_eff)
-        res = simulate(
-            jobs,
-            score_fn_plus,
-            reward_fn_instance,
-            "policy",
-            time_window=d,
-            policy="batch",
-            weight_fn=w_fn_plus,
-            shadow=None,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "rbatch":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        w_fn = make_weight_fn(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "policy",
-            time_window=d,
-            policy="rbatch",
-            weight_fn=w_fn,
-            shadow=sp,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    elif dispatch == "rbatch2":
-        gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[dispatch]
-        tau_eff = tau
-        tau_s_eff = tau_s
-        sp = np.array(sp_base, dtype=float, copy=True)
-        sp = sp * gamma_eff + tau_eff
-        score_fn = make_local_score(reward_fn_instance, sp)
-        w_fn = make_weight_fn(reward_fn_instance, sp)
-        gamma_value = float(gamma_eff)
-        tau_value = float(tau_eff)
-        gamma_plus_value = None
-        tau_plus_value = None
-        tau_s_value = float(tau_s_eff)
-        res = simulate(
-            jobs,
-            score_fn,
-            reward_fn_instance,
-            "policy",
-            time_window=d,
-            policy="rbatch2",
-            weight_fn=w_fn,
-            shadow=sp,
-            seed=seed,
-            tie_breaker=tie_breaker,
-            tau_s=tau_s_eff,
-        )
-    elif dispatch == "rbatch+":
-        gamma_plus_eff = gamma_plus if gamma_plus is not None else 1.0
-        tau_plus_eff = tau_plus if tau_plus is not None else 0.0
-        sp_plus = np.array(sp_base, dtype=float, copy=True)
-        sp_plus = sp_plus * gamma_plus_eff + tau_plus_eff
-        score_fn_plus = make_local_score(reward_fn_instance, sp_plus)
-        w_fn_plus = make_weight_fn_latest_shadow(reward_fn_instance, sp_plus)
-        gamma_value = None
-        tau_value = None
-        gamma_plus_value = float(gamma_plus_eff)
-        tau_plus_value = float(tau_plus_eff)
-        res = simulate(
-            jobs,
-            score_fn_plus,
-            reward_fn_instance,
-            "policy",
-            time_window=d,
-            policy="rbatch",
-            weight_fn=w_fn_plus,
-            shadow=None,
-            seed=seed,
-            tie_breaker=tie_breaker,
-        )
-    else:
-        raise ValueError(f"Unknown dispatch: {dispatch}")
-    run_time = time.perf_counter() - t_run
+    row = _compute_summary_metrics(
+        res=res,
+        lp_total=lp_total,
+        opt_total=opt_total,
+        with_opt=with_opt,
+        n=n,
+        d=d,
+        seed=seed,
+        shadow=shadow,
+        dispatch=dispatch,
+        resolution_label=None,
+        run_time=run_time,
+        gamma_value=gamma_value,
+        tau_value=tau_value,
+        gamma_plus_value=gamma_plus_value,
+        tau_plus_value=tau_plus_value,
+        tau_s_value=tau_s_value,
+    )
 
-    r = res["total_savings"]
-    pooled_pct = res["pooled_pct"]
-    ratio_lp = (r / lp_total) if lp_total > 0 else float("nan")
-    gap_lp = _safe_gap(lp_total, r)
-    ratio_opt = (r / opt_total) if (with_opt and opt_total and opt_total > 0) else None
-    gap_opt = (_safe_gap(opt_total, r) if (with_opt and opt_total is not None) else None)
-
-    return {
-        "shadow": shadow,
-        "dispatch": dispatch,
-        "n": n,
-        "d": d,
-        "seed": seed,
-        "savings": r,
-        "pooled_pct": pooled_pct,
-        "ratio_lp": ratio_lp,
-        "lp_gap": gap_lp,
-        "ratio_opt": ratio_opt,
-        "opt_gap": gap_opt,
-        "pairs": len(res["pairs"]),
-        "solos": len(res["solos"]),
-        "time_s": run_time,
-        "method": ("score" if "greedy" in dispatch else dispatch),
-        "gamma": gamma_value,
-        "tau": tau_value,
-        "gamma_plus": gamma_plus_value,
-        "tau_plus": tau_plus_value,
-        "tau_s": tau_s_value,
-    }
+    return row
 
 
 def main() -> None:

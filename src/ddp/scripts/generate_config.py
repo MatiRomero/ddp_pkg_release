@@ -3,12 +3,19 @@
 This script materialises a Cartesian product of parameter choices into a
 configuration CSV. Each row represents one invocation of
 ``ddp.scripts.run`` driven through ``run_from_config``.
+
+The default average-duals city directory is ``data/average_duals_city``
+relative to the repository root. Override this location by setting the
+``DDP_AD_CITY_DIR`` environment variable to an absolute path:
+
+    DDP_AD_CITY_DIR=/path/to/custom/dir python -m ddp.scripts.generate_config
 """
 
 from __future__ import annotations
 
 import csv
 import itertools
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +27,48 @@ from typing import Iterable, Mapping, Sequence
 _DAYS: Sequence[int] = [0,1,2,3,4,5,6,7]
 _DEADLINES: Sequence[int] = [10,30,60,90,120,150,180]
 _SHADOWS: Sequence[str] = ["naive","pb","hd","ad"]
+
+
+# Repository root detection --------------------------------------------------
+
+def repo_root() -> Path:
+    """Find the repository root by walking up until pyproject.toml is found.
+    
+    Returns
+    -------
+    Path
+        The repository root directory (parent of pyproject.toml).
+        
+    Raises
+    ------
+    RuntimeError
+        If pyproject.toml cannot be found by walking up from the current file.
+    """
+    current = Path(__file__).resolve().parent
+    while current != current.parent:
+        if (current / "pyproject.toml").exists():
+            return current
+        current = current.parent
+    raise RuntimeError("Could not find pyproject.toml by walking up from script location")
+
+
+def _default_ad_city_dir() -> str:
+    """Return the default average-duals city directory path.
+    
+    The default location is ``data/average_duals_city`` relative to the
+    repository root. This can be overridden by setting the ``DDP_AD_CITY_DIR``
+    environment variable to an absolute path.
+    
+    Returns
+    -------
+    str
+        Path to the average-duals city directory (absolute if env var is set,
+        otherwise repo-relative).
+    """
+    env_override = os.environ.get("DDP_AD_CITY_DIR")
+    if env_override:
+        return str(Path(env_override).expanduser().resolve())
+    return str(repo_root() / "data" / "average_duals_city")
 
 
 # Optional arguments forwarded to ddp.scripts.run --------------------------
@@ -43,7 +92,7 @@ _OPTIONAL_SWEEP: Mapping[str, Sequence[object]] = {
     "return_details": [""],
     "tie_breaker": [""],
     "reward_type": [""],
-    "ad_duals": ["/user/mer2262/ddp_pkg_release/data/average_duals_city"],
+    "ad_duals": [_default_ad_city_dir()],
     # "ad_duals": [""],
     "ad_resolution": ["8"],
     # "ad_resolutions": [""],

@@ -4,7 +4,82 @@ This project provides a research package for experimenting with online delivery 
 
 The core data structure is a `Job` dataclass (`ddp.model.Job`) that records each request's origin, destination, timestamp, and implied travel length.  Simulations and analytics operate directly on these job objects, making it easy to experiment with different spatial layouts and pooling policies.
 
-Install in editable mode, then use the CLI entry points.
+## Reproducibility (Recommended workflows)
+
+### (A) Quickstart (toy / no external data)
+
+Set up the environment and run minimal working examples:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .[plot]
+ddp-mwe01
+ddp-mwe02
+```
+
+These commands run small hand-crafted instances and print results to the console. Use `--plot` to generate optional matplotlib visualizations. No output files are created by default.
+
+### (B) Reproduce paper artifacts (synthetic)
+
+Run synthetic experiments and generate figures:
+
+```bash
+# Run parameter sweep (1D, common origin, n=1000)
+python -m ddp.scripts.sweep_param \
+  --param d --values 10:100:10 \
+  --n 1000 \
+  --with_opt \
+  --fix_origin_zero \
+  --flatten_axis x \
+  --outdir sweeps \
+  --save_csv synth_1d_n1000_common_origin.csv \
+  --trials 20
+
+# Aggregate and plot results
+python -m ddp.scripts.aggregate_results sweeps/synth_1d_n1000_common_origin.csv \
+  --out sweeps/synth_1d_n1000_common_origin_agg.csv
+python -m ddp.scripts.plot_results \
+  --csv_agg sweeps/synth_1d_n1000_common_origin_agg.csv \
+  --mode grid --outdir figs --metric all
+```
+
+**Artifact → Command → Output path:**
+
+| Artifact | Command | Output path |
+|----------|---------|-------------|
+| Figure: Shadow×Dispatch heatmap | `plot_results --mode grid` | `figs/*_mean_ratio_opt.png`, `figs/*_mean_savings.png` |
+| Figure: Parameter sweep curves | `plot_results --mode sweep` | `figs/*_sweep_*.png` |
+| Table: Aggregated results | `aggregate_results` | `sweeps/*_agg.csv` |
+| Raw trial data | `sweep_param` | `sweeps/*.csv` |
+
+For 2D experiments, remove `--flatten_axis x`. See [docs/REPRODUCE.md](docs/REPRODUCE.md) for detailed workflows.
+
+### (C) Reproduce Meituan results (requires private data)
+
+**⚠️ Requires dataset not included in this repository.**
+
+See [data/README.md](data/README.md) for data acquisition instructions and expected file structure.
+
+Once data is available, run the Meituan pipeline:
+
+```bash
+# Compute average duals for a target day
+python -m ddp.scripts.meituan_average_duals \
+  --day 20210305 \
+  --data-dir data/meituan_snapshots \
+  --history-days 20210228,20210301,20210302,20210303,20210304 \
+  --resolution 8 \
+  --export-ad-csv reports/meituan_day5_lookup.csv
+
+# Run experiments with AD shadows
+python -m ddp.scripts.run \
+  --jobs-csv data/meituan_city_lunchtime_plat10301330_day0.csv \
+  --d 10 \
+  --shadows naive,pb,hd,ad \
+  --ad-duals reports/meituan_day5_lookup.csv \
+  --ad-mapping ddp.mappings.h3_pairs:job_mapping \
+  --save_csv results/meituan_day0_d10.csv
+```
 
 ## Install
 ```bash
@@ -14,51 +89,62 @@ pip install -e .
 pip install -e .[plot]
 ```
 
-## Run
+## Advanced Usage
+
+For detailed command reference and additional workflows, see the sections below.
+
+### Basic Commands
+
 ```bash
+# Minimal working examples
 ddp-mwe01
 ddp-mwe02
-ddp-many  --trials 20 --n 100 --d 2 --save_csv results_agg.csv
-# Batch-convert the Meituan lunchtime CSV dumps into .npz archives and sweep d
-python scripts/run_meituan_sweep.py
-# Merge per-day policy runs with their AD counterparts
-python scripts/batch_merge_meituan.py
-# Load jobs straight from a Meituan-style CSV (see notes below)
+
+# Multi-trial aggregation
+ddp-many --trials 20 --n 100 --d 2 --save_csv results_agg.csv
+
+# Trace available jobs
+ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
+```
+
+### Job Loading and Conversion
+
+```bash
+# Load jobs from CSV and export as .npz
 python -m ddp.scripts.run --jobs-csv data/meituan_sample.csv --d 3 \
   --export-npz meituan_sample.npz --save_csv run_from_csv.csv
-# Inspect a stored instance (origins/dests/timestamps npz) and follow the available set
-ddp-trace-available --jobs sample_instance.npz --d 3 --policy rbatch --shadow pb --plot
-# Evaluate average-dual (AD) shadows using a pre-computed per-job table
+
+# Evaluate with average-dual shadows
 python -m ddp.scripts.run \
   --jobs sample_instance.npz --d 3 --shadows ad --dispatch batch,rbatch \
   --ad_duals ad_runtime_values.csv --ad-mapping ddp.mappings.h3_pairs:job_mapping
-# Built-in uniform grid mapper (rounds each origin/destination to 0.5-unit cells)
+```
+
+### Average Duals Pipeline
+
+```bash
+# Built-in uniform grid mapper
 python -m ddp.scripts.average_duals --mapping ddp.mappings.uniform_grid:mapping --show-types
-# Aggregate a hindsight-dual dataset into an average-dual CSV using the uniform grid mapper
+
+# Build average duals from HD dataset
 python -m ddp.scripts.build_average_duals data/hd_samples.csv \
   ddp.mappings.uniform_grid:mapping data/ad_uniform_grid.csv
-# Inspect coverage/variability for a dataset and (optionally) export an origin heatmap
+
+# Inspect coverage
 python -m ddp.scripts.inspect_average_duals data/hd_dataset_n100_d10.csv \
   --mapping ddp.mappings.uniform_grid:mapping \
   --heatmap reports/uniform_grid_origin_coverage.png
-# Compute H3-bucketed Meituan average duals and export tables/maps
-python -m ddp.scripts.meituan_average_duals \
-  --day 20210305 \
-  --data-dir data/meituan_snapshots \
-  --history-days 20210228,20210301,20210302,20210303,20210304 \
-  --resolution 8 \
-  --neighbor-radius 1 \
-  --export-summary reports/meituan_r8_summary.csv \
-  --export-ad-csv reports/meituan_day5_lookup.csv \
-  --folium-map reports/meituan_day5_sender_coverage.html
-# Generate a batch config (defaults to Area 6 lunchtime snapshots)
+```
+
+### Batch Processing (SGE/Cluster)
+
+```bash
+# Generate batch configs
 PYTHONPATH=src python -m ddp.scripts.generate_ad_config
-# Submit the batch to SGE, selecting rows via $SGE_TASK_ID
-qsub -t 1-12:1 -- python -m ddp.scripts.run_ad_from_config --config configs/ad_config.csv
-# Inspect the resolved command locally without running the pipeline
-PYTHONPATH=src python -m ddp.scripts.run_ad_from_config --dry-run
-# Generate a synthetic batch config and fan it out via qsub
 python scripts/generate_synth_config.py --seeds 0,1,2,3,4 --d-values 30,60,90
+
+# Run from config (local or SGE)
+python -m ddp.scripts.run_from_config --config configs/config_synth_*.csv
 qsub -t 1-60:1 -- python -m ddp.scripts.run_from_config --config configs/config_synth_*.csv
 ```
 
