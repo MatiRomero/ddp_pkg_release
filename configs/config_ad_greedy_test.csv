@@ -1,0 +1,9 @@
+day,d,shadow,jobs_csv,save_csv,dispatch,gamma,tau,plus_gamma,plus_tau,seed,timestamp_column,export_npz,with_opt,opt_method,print_matches,return_details,tie_breaker,ad_duals,ad_resolution,ad_resolutions,ad_mapping
+0,10,hd,data/meituan_city_lunchtime_plat10301330_day0.csv,results/ad_greedy_test/day0_d10_hd_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+0,10,pb,data/meituan_city_lunchtime_plat10301330_day0.csv,results/ad_greedy_test/day0_d10_pb_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+0,10,ad,data/meituan_city_lunchtime_plat10301330_day0.csv,results/ad_greedy_test/day0_d10_ad_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+0,10,naive,data/meituan_city_lunchtime_plat10301330_day0.csv,results/ad_greedy_test/day0_d10_naive_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+1,10,hd,data/meituan_city_lunchtime_plat10301330_day1.csv,results/ad_greedy_test/day1_d10_hd_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+1,10,pb,data/meituan_city_lunchtime_plat10301330_day1.csv,results/ad_greedy_test/day1_d10_pb_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+1,10,ad,data/meituan_city_lunchtime_plat10301330_day1.csv,results/ad_greedy_test/day1_d10_ad_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
+1,10,naive,data/meituan_city_lunchtime_plat10301330_day1.csv,results/ad_greedy_test/day1_d10_naive_dispatchgreedy_ad_dualsdata_average_duals_city.csv,greedy,,,,,,,,,,,,,data/average_duals_city,,,
