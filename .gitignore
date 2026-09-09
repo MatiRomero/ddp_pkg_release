@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 .ipynb_checkpoints/
+.pytest_cache/
 dist/
 build/
 *.egg-info/
@@ -22,6 +23,11 @@ figs/
 sweeps/
 data/
 reports/
+output/
+outputs/
+tmp/
+logs/
 src/ddp/results
 configs/
+experiment_src/
 notebooks/

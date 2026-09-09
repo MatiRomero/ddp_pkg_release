@@ -355,3 +355,7 @@ python -m ddp.scripts.plot_shadow_sweep --csv results/shadow_sweep.csv --x gamma
 
 Swap `--x tau` to draw tau along the x-axis, supply repeated `--geometry`/`--shadow` flags to compare curves, and add
 `--show` for an interactive window.
+
+### Meituan area-specific gamma
+
+The current [five-area 120-second pilot](docs/meituan_area5_120s_grid.md) fits areas 22, 6, 12, 5 and 9 around a fixed gamma-0.4 reference, using PB with `rbatch2` every 30 seconds, six gammas per fitted area and eight held-out-day folds. All jobs remain in citywide matching. Its isolated source snapshot and one-command submission helper leave existing GRID experiments intact. The earlier [23-area 120-second workflow](docs/meituan_periodic_120s_grid.md), [180-second configuration](docs/meituan_periodic_180s_grid.md) and [60-second baseline documentation](docs/meituan_area_gamma_grid.md) remain available. Scalar defaults remain unchanged.

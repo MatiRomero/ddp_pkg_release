@@ -8,6 +8,7 @@ import math
 import os
 import re
 import time
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, Literal
@@ -19,6 +20,7 @@ from ddp.engine.opt import compute_lp_relaxation, compute_opt
 from ddp.engine.sim import simulate
 from ddp.model import Job, generate_jobs, reward as pooling_reward, distance
 from ddp.scripts.csv_loader import load_jobs_from_csv
+from ddp.area_gamma import resolve_area_gammas
 
 _POLICY_DEFAULT_GAMMA: dict[str, float] = {
     "greedy": 1.0,
@@ -510,10 +512,21 @@ def _write_csv(rows, path: str) -> None:
         "time_s",
         "method",
     ]
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
+    fields += sorted({key for row in rows for key in row} - set(fields))
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=output.name + ".", dir=output.parent)
+    try:
+        with os.fdopen(fd, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, output)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _build_job_rows(
@@ -640,6 +653,8 @@ def run_instance(
     Mapping[str, Sequence[float] | np.ndarray]
     | Sequence[tuple[str, Sequence[float] | np.ndarray]]
     | None = None,
+    gamma_table=None,
+    skip_lp: bool = False,
 ):
     """Run the SHADOW × DISPATCH grid on a job instance.
 
@@ -717,6 +732,11 @@ def run_instance(
         return sorted_items[0]
 
     jobs = list(jobs)
+    area_gammas, area_provenance = resolve_area_gammas(
+        jobs, gamma_table, d=d, gamma=gamma, shadows=shadows,
+        dispatches=dispatches, tau=tau, reward_type=reward_type, tau_s=tau_s)
+    if skip_lp and "hd" in shadows:
+        raise ValueError("HD requires LP duals; cannot use skip_lp")
     n = len(jobs)
     timestamps = np.array([job.timestamp for job in jobs], dtype=float)
     lengths = np.array([job.length for job in jobs], dtype=float)
@@ -755,7 +775,8 @@ def run_instance(
 
     # LP (upper bound + duals for HD) — compute once
     t0 = time.perf_counter()
-    lp = compute_lp_relaxation(jobs, reward_fn_instance, time_window=d)
+    lp = ({"total_upper": float("nan"), "duals": [], "method": "skipped"}
+          if skip_lp else compute_lp_relaxation(jobs, reward_fn_instance, time_window=d))
     lp_time = time.perf_counter() - t0
     lp_total = float(lp["total_upper"])
     duals = np.array(lp["duals"], dtype=float)
@@ -995,10 +1016,10 @@ def run_instance(
                     gamma_eff = gamma if gamma is not None else _POLICY_DEFAULT_GAMMA[disp]
                     tau_eff = tau
                     sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
+                    sp = sp * (area_gammas if area_gammas is not None else gamma_eff) + tau_eff
                     score_fn = make_local_score(reward_fn_instance, sp)
                     w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
+                    gamma_value = None if area_gammas is not None else float(gamma_eff)
                     tau_value = float(tau_eff)
                     res = simulate(
                         jobs,
@@ -1017,10 +1038,10 @@ def run_instance(
                     tau_eff = tau
                     tau_s_eff = tau_s
                     sp = np.array(sp_base, dtype=float, copy=True)
-                    sp = sp * gamma_eff + tau_eff
+                    sp = sp * (area_gammas if area_gammas is not None else gamma_eff) + tau_eff
                     score_fn = make_local_score(reward_fn_instance, sp)
                     w_fn = make_weight_fn(reward_fn_instance, sp)
-                    gamma_value = float(gamma_eff)
+                    gamma_value = None if area_gammas is not None else float(gamma_eff)
                     tau_value = float(tau_eff)
                     tau_s_value = float(tau_s_eff)
                     res = simulate(
@@ -1102,10 +1123,13 @@ def run_instance(
                     "tau_s": tau_s_value,
                 }
 
+                row.update(area_provenance)
+
                 detail: dict[str, Any] | None = None
                 if return_details or print_matches:
                     pairs_idx = [(i, j) for (i, j, *_rest) in res["pairs"]]
-                    detail = {"pairs": pairs_idx, "solos": list(res["solos"])}
+                    detail = {"pairs": pairs_idx, "solos": list(res["solos"]),
+                              "dispatch_times": dict(res["dispatch_times"])}
 
                 job_rows: list[dict[str, object]] | None = None
                 if save_job_csv and disp in job_csv_policies:
@@ -1263,6 +1287,9 @@ def run_once(
     | np.ndarray
     | None = None,
     ad_mapper: Callable[[Job], str | None] | None = None,
+    jobs: Sequence[Job] | None = None,
+    gamma_table=None,
+    skip_lp: bool = False,
 ) -> dict:
     """Single-run helper mirroring :func:`run_instance` for one configuration.
 
@@ -1279,6 +1306,23 @@ def run_once(
     The ``ad_duals`` lookup, when provided with ``shadow='ad'``, must already
     contain one value per generated job just like :func:`run_instance`.
     """
+
+    if jobs is not None or gamma_table is not None or skip_lp:
+        if jobs is None:
+            if gamma_table is not None:
+                raise ValueError("gamma_table requires labeled jobs in run_once")
+            if n <= 1:
+                raise ValueError("run_once requires n > 1 to generate jobs")
+            jobs = generate_jobs(n, np.random.default_rng(seed))
+        if len(jobs) != n:
+            raise ValueError("n does not match supplied jobs")
+        return run_instance(
+            jobs, d, shadows=(shadow,), dispatches=(dispatch,), seed=seed,
+            with_opt=with_opt, opt_method=opt_method, gamma=gamma, tau=tau,
+            gamma_plus=gamma_plus, tau_plus=tau_plus, tau_s=tau_s,
+            tie_breaker=tie_breaker, reward_type=reward_type, ad_duals=ad_duals,
+            ad_mapper=ad_mapper, gamma_table=gamma_table, skip_lp=skip_lp,
+            print_table=False)["rows"][0]
 
     rng = np.random.default_rng(seed)
     if n <= 1:
@@ -1667,7 +1711,10 @@ def main() -> None:
     )
     p.add_argument("--print_matches", action="store_true")
     p.add_argument("--return_details", action="store_true")
-    p.add_argument(
+    gamma_group = p.add_mutually_exclusive_group()
+    gamma_group.add_argument("--gamma-table", help="Validated area coefficient JSON table")
+    p.add_argument("--skip-lp", action="store_true", help="Skip unrequested LP bound (incompatible with HD)")
+    gamma_group.add_argument(
         "--gamma",
         type=float,
         default=None,
@@ -1838,16 +1885,19 @@ def main() -> None:
     if not (len(origins) == len(dests) == len(timestamps)):
         raise SystemExit("Mismatched job array lengths in provided job data")
 
-    jobs = [
-        Job(
-            origin=tuple(map(float, origin)),
-            dest=tuple(map(float, dest)),
-            timestamp=float(ts),
-        )
-        for origin, dest, ts in zip(origins, dests, timestamps)
-    ]
+    if args.jobs:
+        jobs = [
+            Job(
+                origin=tuple(map(float, origin)),
+                dest=tuple(map(float, dest)),
+                timestamp=float(ts),
+            )
+            for origin, dest, ts in zip(origins, dests, timestamps)
+        ]
 
     if args.export_npz:
+        if args.gamma_table or any(job.dataset_id for job in jobs):
+            raise SystemExit("Enriched jobs must stay in CSV; NPZ export would lose area metadata")
         export_origins = np.array([job.origin for job in jobs], dtype=float)
         export_dests = np.array([job.dest for job in jobs], dtype=float)
         export_timestamps = np.array([job.timestamp for job in jobs], dtype=float)
@@ -1953,6 +2003,8 @@ def main() -> None:
         reward_type=args.reward_type,
         print_matches=args.print_matches,
         gamma=args.gamma,
+        gamma_table=args.gamma_table,
+        skip_lp=args.skip_lp,
         tau=args.tau,
         gamma_plus=args.plus_gamma,
         tau_plus=args.plus_tau,
