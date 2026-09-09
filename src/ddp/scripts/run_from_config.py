@@ -41,6 +41,9 @@ _COLUMN_TO_FLAG: dict[str, str] = {
     "shadows": "--shadows",
     "dispatch": "--dispatch",
     "gamma": "--gamma",
+    "gamma_table": "--gamma-table",
+    "skip_lp": "--skip-lp",
+    "tau_s": "--tau_s",
     "tau": "--tau",
     "plus_gamma": "--plus_gamma",
     "plus_tau": "--plus_tau",
@@ -66,7 +69,14 @@ _COLUMN_TO_FLAG: dict[str, str] = {
     "reward_type": "--reward-type",
 }
 
-_BOOLEAN_COLUMNS = {"with_opt", "print_matches", "return_details", "het_origins", "het-origins"}
+# Explicitly registered grouped-experiment fields; these use a separate runner.
+_EXPERIMENT_COLUMNS = {
+    "experiment_manifest": "--manifest", "experiment_stage": "--stage",
+    "experiment_day": "--day", "experiment_fold": "--fold",
+    "experiment_step": "--step", "experiment_candidate": "--candidate",
+}
+
+_BOOLEAN_COLUMNS = {"skip_lp", "with_opt", "print_matches", "return_details", "het_origins", "het-origins"}
 _REPEATABLE_COLUMNS = {"ad_resolution"}
 
 
@@ -115,6 +125,25 @@ def main() -> None:
         )
 
     row = rows[row_idx]
+
+    if _normalise(row.get("experiment_manifest")):
+        if forward or any(_normalise(value) for key, value in row.items() if key not in _EXPERIMENT_COLUMNS):
+            raise SystemExit("Grouped experiment rows accept only registered experiment fields")
+        required = {"experiment_manifest", "experiment_stage", "experiment_day"}
+        if any(not _normalise(row.get(key)) for key in required):
+            raise SystemExit("Grouped experiment row lacks manifest/stage/day")
+        cmd = [sys.executable, "-m", "ddp.scripts.meituan_area_gamma", "run-task"]
+        for column, flag in _EXPERIMENT_COLUMNS.items():
+            value = _normalise(row.get(column))
+            if value:
+                if column == "experiment_manifest":
+                    value = resolve_repo_path(value)
+                cmd.extend([flag, value])
+        print(f"[INFO] SGE_TASK_ID={sge_task_id} -> row {row_idx + 1}/{len(rows)}", flush=True)
+        print("[INFO] Running:", " ".join(cmd), flush=True)
+        if args.dry_run:
+            return
+        raise SystemExit(subprocess.run(cmd).returncode)
 
     jobs_csv = resolve_repo_path(_normalise(row.get("jobs_csv")))
     jobs_npz = resolve_repo_path(_normalise(row.get("jobs")))
@@ -190,6 +219,8 @@ def main() -> None:
                 cmd.extend([flag, entry])
             continue
 
+        if column == "gamma_table":
+            normalised = resolve_repo_path(normalised)
         cmd.extend([flag, normalised])
 
     print(f"[INFO] SGE_TASK_ID={sge_task_id} -> row {row_idx + 1}/{len(rows)}")

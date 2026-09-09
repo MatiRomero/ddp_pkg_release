@@ -19,6 +19,12 @@ class Job:
     origin: Point
     dest: Point
     timestamp: float
+    # Optional dataset metadata travels with a job through filtering and sorting.
+    da_id: str | None = None
+    job_id: str | None = None
+    day: str | None = None
+    dataset_id: str | None = None
+    original_timestamp: str | None = None
 
     @property
     def length(self) -> float:
