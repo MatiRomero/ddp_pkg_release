@@ -15,6 +15,15 @@ pip install -e .[plot]
 ```
 
 ## Run
+
+For interactive Meituan experiments, open
+[Meituan Algorithm Playground](notebooks/Meituan_Algorithm_Playground.ipynb).
+It uses the existing CSV loader and `run_instance` evaluator, with editable
+day, city/Area 6 dataset, time slice, pooling window, policies, shadows,
+gamma/tau, and optional parameter sweeps. The default evaluates a short slice;
+the evaluator always computes an LP benchmark. Select a Python kernel with the
+package dependencies installed; the notebook also requires IPython and ipykernel.
+
 ```bash
 ddp-mwe01
 ddp-mwe02

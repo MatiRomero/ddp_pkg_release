@@ -24,4 +24,5 @@ data/
 reports/
 src/ddp/results
 configs/
-notebooks/
+notebooks/*
+!notebooks/Meituan_Algorithm_Playground.ipynb
